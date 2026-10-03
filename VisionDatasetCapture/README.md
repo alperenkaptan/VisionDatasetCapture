@@ -21,7 +21,7 @@ On every Start the folder is scanned for `{DatasetName}_N.png`; numbering contin
 |---|---|
 | `MainWindow.xaml(.cs)` | Single window, input validation, Start/Stop toggle, status area |
 | `ProcessSelector.cs` | Lists processes that have a main window title |
-| `ScreenshotCapture.cs` | Captures the window via Win32 `PrintWindow` (`PW_RENDERFULLCONTENT`), works even when partially covered |
+| `ScreenshotCapture.cs` | Copies the window's on-screen rectangle from the composited desktop (`CopyFromScreen` + DWM frame bounds), so GPU/DirectX content is captured |
 | `DatasetWriter.cs` | Name validation, folder creation, next-number lookup, PNG saving |
 
 Performance notes:
@@ -33,5 +33,6 @@ Performance notes:
 ## Limitations
 
 - Minimized windows cannot be captured (capture stops with an error).
-- Some GPU/exclusive-fullscreen or protected content may come out black with `PrintWindow`.
+- The window must be visible and not covered by other windows, since the screen region is copied. Exclusive-fullscreen or DRM-protected content may still be black.
 - The captured image is the full window including borders/title bar.
+

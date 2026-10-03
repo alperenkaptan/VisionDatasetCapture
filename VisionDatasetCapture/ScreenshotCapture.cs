@@ -26,7 +26,9 @@ namespace VisionDatasetCapture
             if (windowHandle == IntPtr.Zero || !IsWindow(windowHandle) || IsIconic(windowHandle))
                 return null;
 
-            if (!GetWindowRect(windowHandle, out var rect))
+            // Visible frame bounds (excludes the invisible resize shadow); fall back to the plain window rect.
+            if (DwmGetWindowAttribute(windowHandle, DWMWA_EXTENDED_FRAME_BOUNDS, out RECT rect, Marshal.SizeOf<RECT>()) != 0
+                && !GetWindowRect(windowHandle, out rect))
                 return null;
 
             var width = rect.Right - rect.Left;
@@ -35,28 +37,27 @@ namespace VisionDatasetCapture
             if (width <= 0 || height <= 0)
                 return null;
 
+            // Copy from the composited desktop so GPU/DirectX content is included (PrintWindow returns black for it).
             var bitmap = new Bitmap(width, height, PixelFormat.Format32bppArgb);
-            bool ok;
-            using (var graphics = Graphics.FromImage(bitmap))
+            try
             {
-                var hdc = graphics.GetHdc();
-                try { ok = PrintWindow(windowHandle, hdc, 2); }
-                finally { graphics.ReleaseHdc(hdc); }
+                using var graphics = Graphics.FromImage(bitmap);
+                graphics.CopyFromScreen(rect.Left, rect.Top, 0, 0, new Size(width, height), CopyPixelOperation.SourceCopy);
+                return bitmap;
             }
-
-            if (!ok)
+            catch
             {
                 bitmap.Dispose();
                 return null;
             }
-
-            return bitmap;
         }
+
+        private const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
+
+        [DllImport("dwmapi.dll")]
+        private static extern int DwmGetWindowAttribute(IntPtr hwnd, int dwAttribute, out RECT pvAttribute, int cbAttribute);
 
         [DllImport("user32.dll")]
         private static extern bool IsIconic(IntPtr hWnd);
-
-        [DllImport("user32.dll")]
-        private static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint nFlags);
     }
 }
