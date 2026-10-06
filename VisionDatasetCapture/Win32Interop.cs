@@ -11,20 +11,20 @@ namespace VisionDatasetCapture
         /// Retrieves the dimensions of the bounding rectangle of the specified window.
         /// The dimensions are given in screen coordinates, relative to the upper-left corner of the screen.
         /// </summary>
-        [DllImport("user32.dll", SetLastError = true)]
+        [DllImport("user32.dll", SetLastError = true, EntryPoint = "GetWindowRect")]
         private static extern bool GetWindowRectNative(IntPtr hWnd, out RECT lpRect);
 
         /// <summary>
         /// Retrieves the coordinates of a window's client area.
         /// The client area is the portion of the window where content is displayed.
         /// </summary>
-        [DllImport("user32.dll", SetLastError = true)]
+        [DllImport("user32.dll", SetLastError = true, EntryPoint = "GetClientRect")]
         private static extern bool GetClientRectNative(IntPtr hWnd, out RECT lpRect);
 
         /// <summary>
         /// Retrieves the identifier of the thread and process that created the specified window.
         /// </summary>
-        [DllImport("user32.dll", SetLastError = true)]
+        [DllImport("user32.dll", SetLastError = true, EntryPoint = "GetWindowThreadProcessId")]
         private static extern uint GetWindowThreadProcessIdNative(IntPtr hWnd, out uint lpdwProcessId);
 
         /// <summary>
