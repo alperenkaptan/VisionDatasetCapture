@@ -58,6 +58,7 @@ namespace VisionDatasetCapture
         private bool _wasLeftMouseDown;
         private CancellationTokenSource? _eyedropperCts;
         private Task? _eyedropperLoopTask;
+        private Window? _eyedropperOverlay;
         private System.Drawing.Color? _selectedColor;
         private System.Windows.Point? _lastSamplePoint;
         private const int MagnifierSampleRadius = 5;
@@ -336,12 +337,7 @@ namespace VisionDatasetCapture
 
             Focus();
             SetEyedropperUiState("Sampling target process... Left click to select, Esc to cancel", WPFBrushes.DodgerBlue);
-
-            _eyedropperCts?.Cancel();
-            _eyedropperCts?.Dispose();
-            _eyedropperCts = new CancellationTokenSource();
-            var localCts = _eyedropperCts;
-            _eyedropperLoopTask = Task.Run(() => ExternalEyedropperLoopAsync(localCts.Token));
+            OpenEyedropperOverlay();
         }
 
         private void CancelEyedropperMode()
@@ -354,6 +350,18 @@ namespace VisionDatasetCapture
             cts?.Dispose();
 
             _eyedropperLoopTask = null;
+
+            if (_eyedropperOverlay != null)
+            {
+                try
+                {
+                    _eyedropperOverlay.Close();
+                }
+                catch
+                {
+                }
+                _eyedropperOverlay = null;
+            }
 
             var popup = FindName("FloatingMagnifierPopup") as System.Windows.Controls.Primitives.Popup;
             if (popup != null)
@@ -1232,72 +1240,101 @@ namespace VisionDatasetCapture
                 popup.IsOpen = true;
         }
 
-        private async Task ExternalEyedropperLoopAsync(CancellationToken token)
+        private void OpenEyedropperOverlay()
         {
-            while (!token.IsCancellationRequested && _isEyedropperActive && _isCapturing)
+            if (!Win32Interop.GetWindowRect(_activeHandle, out var rect))
+                return;
+
+            if (_eyedropperOverlay != null)
             {
-                try
-                {
-                    if (Win32Interop.IsEscPressed())
-                    {
-                        await Dispatcher.BeginInvoke(() => CancelEyedropperMode());
-                        break;
-                    }
-
-                    if (!Win32Interop.TryGetCursorPos(out var point))
-                    {
-                        await Task.Delay(16, token);
-                        continue;
-                    }
-
-                    if (TrySampleColorAtScreenPoint(point.X, point.Y, out var sampledColor, out var x, out var y))
-                    {
-                        await Dispatcher.BeginInvoke(() =>
-                        {
-                            UpdateColorReadout(sampledColor, x, y);
-                            UpdateFloatingMagnifierPosition(point.X, point.Y);
-                            SetEyedropperUiState("Sampling target process... Left click to select, Esc to cancel", WPFBrushes.DodgerBlue);
-                        });
-                    }
-
-                    var leftMouseDown = Win32Interop.IsLeftMouseDown();
-                    if (leftMouseDown && !_wasLeftMouseDown)
-                    {
-                        _wasLeftMouseDown = true;
-
-                        if (TrySampleColorAtScreenPoint(point.X, point.Y, out var selected, out var sx, out var sy))
-                        {
-                            await Dispatcher.BeginInvoke(() =>
-                            {
-                                _selectedColor = selected;
-                                UpdateSelectedColorSwatch(selected);
-                                UpdateColorReadout(selected, sx, sy);
-                                _isEyedropperActive = false;
-                                Topmost = true;
-                                var popup = FindName("FloatingMagnifierPopup") as System.Windows.Controls.Primitives.Popup;
-                                if (popup != null)
-                                    popup.IsOpen = false;
-                                SetEyedropperUiState("Selected", WPFBrushes.DarkGreen);
-                            });
-                            break;
-                        }
-                    }
-                    else if (!leftMouseDown)
-                    {
-                        _wasLeftMouseDown = false;
-                    }
-
-                    await Task.Delay(16, token);
-                }
-                catch (OperationCanceledException)
-                {
-                    break;
-                }
-                catch
-                {
-                    await Task.Delay(33, token);
-                }
+                try { _eyedropperOverlay.Close(); } catch { }
+                _eyedropperOverlay = null;
             }
+
+            var overlay = new Window
+            {
+                WindowStyle = WindowStyle.None,
+                ResizeMode = ResizeMode.NoResize,
+                ShowInTaskbar = false,
+                AllowsTransparency = true,
+                Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(1, 0, 0, 0)),
+                Topmost = true,
+                Left = rect.Left,
+                Top = rect.Top,
+                Width = Math.Max(1, rect.Right - rect.Left),
+                Height = Math.Max(1, rect.Bottom - rect.Top),
+                Cursor = System.Windows.Input.Cursors.Cross,
+                Owner = this
+            };
+
+            overlay.MouseMove += EyedropperOverlay_MouseMove;
+            overlay.MouseLeftButtonDown += EyedropperOverlay_MouseLeftButtonDown;
+            overlay.KeyDown += EyedropperOverlay_KeyDown;
+            overlay.Deactivated += (_, __) =>
+            {
+                if (_isEyedropperActive)
+                    CancelEyedropperMode();
+            };
+
+            _eyedropperOverlay = overlay;
+            overlay.Show();
+            overlay.Focus();
+        }
+
+        private void EyedropperOverlay_MouseMove(object sender, MouseEventArgs e)
+        {
+            if (!_isEyedropperActive)
+                return;
+
+            if (!Win32Interop.TryGetCursorPos(out var point))
+                return;
+
+            if (TrySampleColorAtScreenPoint(point.X, point.Y, out var sampledColor, out var x, out var y))
+            {
+                UpdateColorReadout(sampledColor, x, y);
+                UpdateFloatingMagnifierPosition(point.X, point.Y);
+                SetEyedropperUiState("Sampling target process... Left click to select, Esc to cancel", WPFBrushes.DodgerBlue);
+            }
+        }
+
+        private void EyedropperOverlay_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (!_isEyedropperActive)
+                return;
+
+            if (!Win32Interop.TryGetCursorPos(out var point))
+                return;
+
+            if (TrySampleColorAtScreenPoint(point.X, point.Y, out var selected, out var sx, out var sy))
+            {
+                _selectedColor = selected;
+                UpdateSelectedColorSwatch(selected);
+                UpdateColorReadout(selected, sx, sy);
+
+                // Gracefully stop eyedropper and remove overlay/popup.
+                CancelEyedropperMode();
+                SetEyedropperUiState("Selected", WPFBrushes.DarkGreen);
+            }
+        }
+
+        private void EyedropperOverlay_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Escape && _isEyedropperActive)
+            {
+                CancelEyedropperMode();
+                e.Handled = true;
+            }
+        }
+
+        private void ColorCoordLabel_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (_lastSamplePoint == null)
+                return;
+
+            var x = (int)_lastSamplePoint.Value.X;
+            var y = (int)_lastSamplePoint.Value.Y;
+            Win32Interop.SetCursorPos(x, y);
+            e.Handled = true;
         }
 
         private void PreviewBorder_MouseMove(object sender, MouseEventArgs e)
@@ -1360,7 +1397,19 @@ namespace VisionDatasetCapture
 
             var eyedropperButton = FindName("EyedropperButton") as Button;
             if (eyedropperButton != null)
-                eyedropperButton.IsEnabled = _isCapturing;
+                eyedropperButton.IsEnabled = _isCapturing && !_isCapturingDataset;
+
+            var exportButton = FindName("ExportSettingsButton") as Button;
+            if (exportButton != null)
+                exportButton.IsEnabled = _isCapturing && !_isCapturingDataset;
+
+            var importButton = FindName("ImportSettingsButton") as Button;
+            if (importButton != null)
+                importButton.IsEnabled = _isCapturing && !_isCapturingDataset;
+
+            var resetButton = FindName("ResetSettingsButton") as Button;
+            if (resetButton != null)
+                resetButton.IsEnabled = _isCapturing && !_isCapturingDataset;
 
             if (!_isCapturing && _isEyedropperActive)
                 CancelEyedropperMode();

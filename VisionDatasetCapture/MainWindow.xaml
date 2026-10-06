@@ -232,7 +232,7 @@
                     <TextBlock Grid.Row="2" Text="HSV:"/>
                     <TextBlock Grid.Row="2" Grid.Column="1" x:Name="ColorHsvLabel" Text="-"/>
                     <TextBlock Grid.Row="3" Text="Coord:"/>
-                    <TextBlock Grid.Row="3" Grid.Column="1" x:Name="ColorCoordLabel" Text="-"/>
+                    <TextBlock Grid.Row="3" Grid.Column="1" x:Name="ColorCoordLabel" Text="-" TextDecorations="Underline" Cursor="Hand" ToolTip="Click to move mouse to this coordinate" MouseLeftButtonDown="ColorCoordLabel_MouseLeftButtonDown"/>
                     <TextBlock Grid.Row="4" Grid.Column="1" x:Name="EyedropperStateLabel" Text="Inactive" Foreground="Gray"/>
                 </Grid>
 
