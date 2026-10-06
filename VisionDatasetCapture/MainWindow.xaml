@@ -10,21 +10,11 @@
             <ColumnDefinition Width="450"/>
         </Grid.ColumnDefinitions>
 
-        <!-- Left side: Preview (Processed and Original, vertical split) -->
+        <!-- Left side: Preview (Processed only, single image) -->
         <Grid Grid.Column="0" Margin="8">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="*"/>
-                <RowDefinition Height="*"/>
-            </Grid.RowDefinitions>
-
-            <!-- Processed Frame (Top) -->
-            <Border Grid.Row="0" BorderBrush="Gray" BorderThickness="1" Background="Black" Margin="0,0,0,4">
+            <!-- Processed Frame (Full) -->
+            <Border BorderBrush="Gray" BorderThickness="1" Background="Black">
                 <Image x:Name="ProcessedPreviewImage" Stretch="Uniform"/>
-            </Border>
-
-            <!-- Original Frame (Bottom) -->
-            <Border Grid.Row="1" BorderBrush="Gray" BorderThickness="1" Background="Black">
-                <Image x:Name="OriginalPreviewImage" Stretch="Uniform"/>
             </Border>
         </Grid>
 

@@ -34,7 +34,6 @@ namespace VisionDatasetCapture
         private int _nextImageNumber;
         private int _captureCount;
 
-        private Bitmap? _latestRawFrame;
         private Bitmap? _latestProcessedFrame;
         private PostProcessingSettings _currentPostProcessingSettings = new();
 
@@ -71,7 +70,6 @@ namespace VisionDatasetCapture
                 finally
                 {
                     // Cleanup resources
-                    _latestRawFrame?.Dispose();
                     _latestProcessedFrame?.Dispose();
                     _keyboardHook?.Dispose();
                     _previewCts?.Dispose();
@@ -409,9 +407,6 @@ namespace VisionDatasetCapture
                                 {
                                     try
                                     {
-                                        _latestRawFrame?.Dispose();
-                                        _latestRawFrame = (DrawingBitmap)bitmap.Clone();
-
                                         var settingsSnapshot = _currentPostProcessingSettings.Clone();
                                         using var processed = ImageProcessor.Process(bitmap, settingsSnapshot);
 
@@ -426,9 +421,8 @@ namespace VisionDatasetCapture
                                 // else: lock is busy, skip this frame update but continue
 
                                 // Dispatch to UI with owned copies (don't hold lock during dispatch)
-                                if (_latestRawFrame != null && _latestProcessedFrame != null)
+                                if (_latestProcessedFrame != null)
                                 {
-                                    var rawCopy = (Bitmap)_latestRawFrame.Clone();
                                     var processedCopy = (Bitmap)_latestProcessedFrame.Clone();
 
                                     _ = Dispatcher.BeginInvoke(() =>
@@ -437,18 +431,16 @@ namespace VisionDatasetCapture
                                         {
                                             if (ReferenceEquals(_previewCts, previewCts))
                                             {
-                                                UpdatePreview(rawCopy, processedCopy);
+                                                UpdatePreview(processedCopy);
                                             }
                                             else
                                             {
-                                                rawCopy?.Dispose();
                                                 processedCopy?.Dispose();
                                             }
                                         }
                                         catch (Exception ex)
                                         {
                                             System.Diagnostics.Debug.WriteLine($"Error updating preview: {ex}");
-                                            rawCopy?.Dispose();
                                             processedCopy?.Dispose();
                                         }
                                     });
@@ -524,10 +516,6 @@ namespace VisionDatasetCapture
 
                 token.ThrowIfCancellationRequested();
 
-                // Update raw frame for preview
-                _latestRawFrame?.Dispose();
-                _latestRawFrame = (Bitmap)rawBitmap.Clone();
-
                 // Process the frame using current settings
                 var settingsSnapshot = _currentPostProcessingSettings.Clone();
                 using var processedBitmap = ImageProcessor.Process(rawBitmap, settingsSnapshot);
@@ -543,8 +531,7 @@ namespace VisionDatasetCapture
                 _captureCount++;
                 var saved = _captureCount;
 
-                // Make safe copies for preview (while holding lock)
-                var rawCopy = (Bitmap)rawBitmap.Clone();
+                // Make safe copy for preview (while holding lock)
                 var processedCopy = (Bitmap)processedBitmap.Clone();
 
                 // Update UI
@@ -554,7 +541,7 @@ namespace VisionDatasetCapture
                     {
                         CapturedLabel.Text = saved.ToString(CultureInfo.InvariantCulture);
                         LastFileLabel.Text = filename;
-                        UpdatePreview(rawCopy, processedCopy); // Update preview with new frame
+                        UpdatePreview(processedCopy); // Update preview with new frame
                     }
                 });
 
@@ -770,46 +757,37 @@ namespace VisionDatasetCapture
         {
             // Safely attempt to get and clone frames without holding lock
             // (called from UI thread only, not from preview loop)
-            Bitmap? rawCopy = null;
             Bitmap? processedCopy = null;
 
             try
             {
-                if (_latestRawFrame != null)
-                    rawCopy = (Bitmap)_latestRawFrame.Clone();
                 if (_latestProcessedFrame != null)
                     processedCopy = (Bitmap)_latestProcessedFrame.Clone();
-                else if (rawCopy != null)
-                    processedCopy = (Bitmap)rawCopy.Clone();
 
-                if (rawCopy != null && processedCopy != null)
-                    UpdatePreview(rawCopy, processedCopy);
+                if (processedCopy != null)
+                    UpdatePreview(processedCopy);
                 else
                 {
-                    rawCopy?.Dispose();
                     processedCopy?.Dispose();
                 }
             }
             catch
             {
                 // If frames are disposed during access, silently skip update
-                rawCopy?.Dispose();
                 processedCopy?.Dispose();
             }
         }
 
-        private void UpdatePreview(Bitmap rawFrame, Bitmap processedFrame)
+        private void UpdatePreview(Bitmap processedFrame)
         {
-            if (rawFrame == null || processedFrame == null)
+            if (processedFrame == null)
                 return;
 
             try
             {
                 var processedControl = FindName("ProcessedPreviewImage") as WPFImage;
-                var originalControl = FindName("OriginalPreviewImage") as WPFImage;
-                if (processedControl == null || originalControl == null)
+                if (processedControl == null)
                 {
-                    rawFrame?.Dispose();
                     processedFrame?.Dispose();
                     return;
                 }
@@ -817,21 +795,16 @@ namespace VisionDatasetCapture
                 try
                 {
                     var processedImage = BitmapToBitmapImage(processedFrame);
-                    var originalImage = BitmapToBitmapImage(rawFrame);
-
                     processedControl.Source = processedImage;
-                    originalControl.Source = originalImage;
                 }
                 finally
                 {
-                    rawFrame?.Dispose();
                     processedFrame?.Dispose();
                 }
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"Error in UpdatePreview: {ex}");
-                rawFrame?.Dispose();
                 processedFrame?.Dispose();
             }
         }
