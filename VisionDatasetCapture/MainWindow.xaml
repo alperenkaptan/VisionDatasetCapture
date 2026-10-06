@@ -1,7 +1,7 @@
 <Window x:Class="VisionDatasetCapture.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Vision Dataset Capture" Width="1000" Height="900"
+        Title="Vision Dataset Capture" Width="1600" Height="900"
         WindowStartupLocation="CenterScreen" ResizeMode="CanResizeWithGrip"
         Topmost="True"
         Closing="Window_Closing">
@@ -241,7 +241,8 @@
                 <TextBlock Text="COLOR EFFECTS" FontWeight="Bold" Margin="0,0,0,8"/>
 
                 <CheckBox x:Name="ColorEffectsEnabledCheckBox" Content="Enable Color Effects" Margin="0,0,0,8" Checked="ColorEffectsSettings_Changed" Unchecked="ColorEffectsSettings_Changed"/>
-                <CheckBox x:Name="ColorEffectsMaskOverlayCheckBox" Content="Show Mask Overlay" Margin="0,0,0,10" Checked="ColorEffectsSettings_Changed" Unchecked="ColorEffectsSettings_Changed"/>
+                <CheckBox x:Name="ColorEffectsMaskOverlayCheckBox" Content="Show Mask Overlay" Margin="0,0,0,6" Checked="ColorEffectsSettings_Changed" Unchecked="ColorEffectsSettings_Changed"/>
+                <CheckBox x:Name="ColorEffectsFreezeFrameCheckBox" Content="Freeze Frame" Margin="0,0,0,10" Checked="ColorEffectsSettings_Changed" Unchecked="ColorEffectsSettings_Changed"/>
 
                 <TextBlock Text="Hue tolerance (degrees)"/>
                 <Grid Margin="0,2,0,8">

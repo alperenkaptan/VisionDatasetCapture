@@ -88,6 +88,7 @@ namespace VisionDatasetCapture
     {
         public bool Enabled { get; set; } = false;
         public bool ShowMaskOverlay { get; set; } = false;
+        public bool FreezeFrame { get; set; } = false;
 
         // Base selected color (from eyedropper)
         public byte BaseR { get; set; } = 255;
@@ -113,6 +114,7 @@ namespace VisionDatasetCapture
             {
                 Enabled = Enabled,
                 ShowMaskOverlay = ShowMaskOverlay,
+                FreezeFrame = FreezeFrame,
                 BaseR = BaseR,
                 BaseG = BaseG,
                 BaseB = BaseB,

@@ -40,6 +40,7 @@ namespace VisionDatasetCapture
         private Bitmap? _latestProcessedFrame;
         private PostProcessingSettings _currentPostProcessingSettings = new();
         private ColorEffectsSettings _currentColorEffectsSettings = new();
+        private bool _isFreezeFrameActive;
 
         // Zoom state
         private double _zoomLevel = 1.0;
@@ -151,6 +152,7 @@ namespace VisionDatasetCapture
 
             ((CheckBox)FindName("ColorEffectsEnabledCheckBox")).IsChecked = colorFx.Enabled;
             ((CheckBox)FindName("ColorEffectsMaskOverlayCheckBox")).IsChecked = colorFx.ShowMaskOverlay;
+            ((CheckBox)FindName("ColorEffectsFreezeFrameCheckBox")).IsChecked = colorFx.FreezeFrame;
             ((Slider)FindName("ColorEffectsHueToleranceSlider")).Value = colorFx.HueTolerance;
             ((Slider)FindName("ColorEffectsSaturationToleranceSlider")).Value = colorFx.SaturationTolerance;
             ((Slider)FindName("ColorEffectsValueToleranceSlider")).Value = colorFx.ValueTolerance;
@@ -573,6 +575,7 @@ namespace VisionDatasetCapture
         private async Task StopPreviewAsync()
         {
             _isCapturing = false;
+            _isFreezeFrameActive = false;
             var previewCts = _previewCts;
             _previewCts = null;
             previewCts?.Cancel();
@@ -634,6 +637,12 @@ namespace VisionDatasetCapture
                 {
                     try
                     {
+                        if (_isFreezeFrameActive)
+                        {
+                            await Task.Delay(33, token);
+                            continue;
+                        }
+
                         // Non-blocking capture - just get the latest frame without waiting for lock
                         using var bitmap = ScreenshotCapture.CaptureWindow(_activeHandle);
                         if (bitmap != null)
@@ -1018,6 +1027,7 @@ namespace VisionDatasetCapture
         {
             var enabledCheck = FindName("ColorEffectsEnabledCheckBox") as CheckBox;
             var maskCheck = FindName("ColorEffectsMaskOverlayCheckBox") as CheckBox;
+            var freezeCheck = FindName("ColorEffectsFreezeFrameCheckBox") as CheckBox;
             var hueSlider = FindName("ColorEffectsHueToleranceSlider") as Slider;
             var satSlider = FindName("ColorEffectsSaturationToleranceSlider") as Slider;
             var valSlider = FindName("ColorEffectsValueToleranceSlider") as Slider;
@@ -1029,7 +1039,7 @@ namespace VisionDatasetCapture
             var valLabel = FindName("ColorEffectsValueToleranceLabel") as TextBlock;
             var strengthLabel = FindName("ColorEffectsStrengthLabel") as TextBlock;
 
-            if (enabledCheck == null || maskCheck == null || hueSlider == null || satSlider == null ||
+            if (enabledCheck == null || maskCheck == null || freezeCheck == null || hueSlider == null || satSlider == null ||
                 valSlider == null || modeCombo == null || strengthSlider == null || targetHexText == null)
                 return;
 
@@ -1041,6 +1051,7 @@ namespace VisionDatasetCapture
             {
                 Enabled = enabledCheck.IsChecked ?? false,
                 ShowMaskOverlay = maskCheck.IsChecked ?? false,
+                FreezeFrame = freezeCheck.IsChecked ?? false,
                 BaseR = _currentColorEffectsSettings.BaseR,
                 BaseG = _currentColorEffectsSettings.BaseG,
                 BaseB = _currentColorEffectsSettings.BaseB,
@@ -1063,7 +1074,12 @@ namespace VisionDatasetCapture
             if (strengthLabel != null)
                 strengthLabel.Text = _currentColorEffectsSettings.EffectStrength.ToString("F2", CultureInfo.InvariantCulture);
 
-            UpdatePreviewIfAvailable();
+            _isFreezeFrameActive = _isCapturing && _currentColorEffectsSettings.FreezeFrame;
+            UpdateUIState();
+
+            if (!_isFreezeFrameActive)
+                UpdatePreviewIfAvailable();
+
             TrySaveCurrentSettings();
         }
 
@@ -1536,27 +1552,39 @@ namespace VisionDatasetCapture
             // Post-processing controls: only enabled when previewing but not capturing dataset
             SetPostProcessingControlsEnabled(_isCapturing && !_isCapturingDataset);
 
+            // Color effects controls disabled while taking screenshots
+            SetColorEffectsControlsEnabled(_isCapturing && !_isCapturingDataset);
+
             var eyedropperButton = FindName("EyedropperButton") as Button;
             if (eyedropperButton != null)
-                eyedropperButton.IsEnabled = _isCapturing && !_isCapturingDataset;
+                eyedropperButton.IsEnabled = _isCapturing && !_isCapturingDataset && !_isFreezeFrameActive;
 
             var exportButton = FindName("ExportSettingsButton") as Button;
             if (exportButton != null)
-                exportButton.IsEnabled = _isCapturing && !_isCapturingDataset;
+                exportButton.IsEnabled = _isCapturing && !_isCapturingDataset && !_isFreezeFrameActive;
 
             var importButton = FindName("ImportSettingsButton") as Button;
             if (importButton != null)
-                importButton.IsEnabled = _isCapturing && !_isCapturingDataset;
+                importButton.IsEnabled = _isCapturing && !_isCapturingDataset && !_isFreezeFrameActive;
 
             var resetButton = FindName("ResetSettingsButton") as Button;
             if (resetButton != null)
-                resetButton.IsEnabled = _isCapturing && !_isCapturingDataset;
+                resetButton.IsEnabled = _isCapturing && !_isCapturingDataset && !_isFreezeFrameActive;
+
+            var toggleButton = FindName("ToggleButton") as Button;
+            if (toggleButton != null)
+                toggleButton.IsEnabled = _isCapturing && !_isFreezeFrameActive;
+
+            var startPreviewButton2 = FindName("StartPreviewButton") as Button;
+            if (startPreviewButton2 != null)
+                startPreviewButton2.IsEnabled = hasValidProcess && !_isCapturingDataset && !_isFreezeFrameActive;
 
             if (!_isCapturing && _isEyedropperActive)
                 CancelEyedropperMode();
 
             if (!_isCapturing)
             {
+                _isFreezeFrameActive = false;
                 var popup = FindName("FloatingMagnifierPopup") as System.Windows.Controls.Primitives.Popup;
                 if (popup != null)
                     popup.IsOpen = false;
@@ -1594,6 +1622,32 @@ namespace VisionDatasetCapture
                         element.IsEnabled = enabled;
                 }
             }
+        }
+
+        private void SetColorEffectsControlsEnabled(bool enabled)
+        {
+            var groups = new[]
+            {
+                new[] { "ColorEffectsEnabledCheckBox", "ColorEffectsMaskOverlayCheckBox", "ColorEffectsFreezeFrameCheckBox" },
+                new[] { "ColorEffectsHueToleranceSlider", "ColorEffectsSaturationToleranceSlider", "ColorEffectsValueToleranceSlider", "ColorEffectsStrengthSlider" },
+                new[] { "ColorEffectsHueToleranceLabel", "ColorEffectsSaturationToleranceLabel", "ColorEffectsValueToleranceLabel", "ColorEffectsStrengthLabel" },
+                new[] { "ColorEffectsModeComboBox", "ColorEffectsTargetHexTextBox" }
+            };
+
+            foreach (var group in groups)
+            {
+                foreach (var name in group)
+                {
+                    var control = FindName(name);
+                    if (control is FrameworkElement element)
+                        element.IsEnabled = enabled;
+                }
+            }
+
+            // Freeze frame checkbox must remain usable during freeze so user can unfreeze.
+            var freezeCheckbox = FindName("ColorEffectsFreezeFrameCheckBox") as CheckBox;
+            if (freezeCheckbox != null && _isCapturing && !_isCapturingDataset)
+                freezeCheckbox.IsEnabled = true;
         }
 
         private static string GetCaptureModeDisplayName(CaptureMode mode)
