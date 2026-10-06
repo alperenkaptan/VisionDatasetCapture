@@ -34,6 +34,7 @@ namespace VisionDatasetCapture
             var satTol = settings.SaturationTolerance;
             var valTol = settings.ValueTolerance;
             var strength = settings.EffectStrength;
+            var showMaskOverlay = settings.ShowMaskOverlay;
 
             var data = output.LockBits(
                 new Rectangle(0, 0, output.Width, output.Height),
@@ -57,12 +58,14 @@ namespace VisionDatasetCapture
                             byte a = p[3];
 
                             RgbToHsv(r, g, b, out var h, out var s, out var v);
-                            var matched = IsMatchHsv(baseH, baseS, baseV, h, s, v, hueTol, satTol, valTol);
+                            var hueDelta = Math.Abs(baseH - h);
+                            if (hueDelta > 180)
+                                hueDelta = 360 - hueDelta;
 
-                            if (!matched)
+                            if (hueDelta > hueTol || Math.Abs(baseS - s) > satTol || Math.Abs(baseV - v) > valTol)
                                 continue;
 
-                            if (settings.ShowMaskOverlay)
+                            if (showMaskOverlay)
                             {
                                 // Red mask overlay for matched pixels
                                 p[0] = (byte)(b * 0.35);

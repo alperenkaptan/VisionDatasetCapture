@@ -226,11 +226,11 @@
                     </Grid.RowDefinitions>
 
                     <TextBlock Grid.Row="0" Text="HEX:"/>
-                    <TextBlock Grid.Row="0" Grid.Column="1" x:Name="ColorHexLabel" Text="-"/>
+                    <TextBox Grid.Row="0" Grid.Column="1" x:Name="ColorHexInput" Text="#FFFFFF" Margin="0,0,0,4" LostFocus="ColorHexInput_LostFocus" KeyDown="ColorInput_KeyDown"/>
                     <TextBlock Grid.Row="1" Text="RGBA:"/>
-                    <TextBlock Grid.Row="1" Grid.Column="1" x:Name="ColorRgbaLabel" Text="-"/>
+                    <TextBox Grid.Row="1" Grid.Column="1" x:Name="ColorRgbaInput" Text="255,255,255,255" Margin="0,0,0,4" LostFocus="ColorRgbaInput_LostFocus" KeyDown="ColorInput_KeyDown"/>
                     <TextBlock Grid.Row="2" Text="HSV:"/>
-                    <TextBlock Grid.Row="2" Grid.Column="1" x:Name="ColorHsvLabel" Text="-"/>
+                    <TextBox Grid.Row="2" Grid.Column="1" x:Name="ColorHsvInput" Text="0,0,100" Margin="0,0,0,4" LostFocus="ColorHsvInput_LostFocus" KeyDown="ColorInput_KeyDown"/>
                     <TextBlock Grid.Row="3" Text="Coord:"/>
                     <TextBlock Grid.Row="3" Grid.Column="1" x:Name="ColorCoordLabel" Text="-" TextDecorations="Underline" Cursor="Hand" ToolTip="Click to move mouse to this coordinate" MouseLeftButtonDown="ColorCoordLabel_MouseLeftButtonDown"/>
                     <TextBlock Grid.Row="4" Grid.Column="1" x:Name="EyedropperStateLabel" Text="Inactive" Foreground="Gray"/>
@@ -248,30 +248,30 @@
                 <Grid Margin="0,2,0,8">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="50"/>
+                        <ColumnDefinition Width="70"/>
                     </Grid.ColumnDefinitions>
                     <Slider x:Name="ColorEffectsHueToleranceSlider" Grid.Column="0" Minimum="0" Maximum="180" Value="15" TickFrequency="1" ValueChanged="ColorEffectsSettings_Changed"/>
-                    <TextBlock x:Name="ColorEffectsHueToleranceLabel" Grid.Column="1" Text="15" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                    <TextBox x:Name="ColorEffectsHueToleranceInput" Grid.Column="1" Text="15" Margin="8,0,0,0" VerticalAlignment="Center" LostFocus="ColorEffectsNumericInput_LostFocus" KeyDown="ColorEffectsNumericInput_KeyDown"/>
                 </Grid>
 
                 <TextBlock Text="Saturation tolerance"/>
                 <Grid Margin="0,2,0,8">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="50"/>
+                        <ColumnDefinition Width="70"/>
                     </Grid.ColumnDefinitions>
                     <Slider x:Name="ColorEffectsSaturationToleranceSlider" Grid.Column="0" Minimum="0" Maximum="1" Value="0.2" TickFrequency="0.01" ValueChanged="ColorEffectsSettings_Changed"/>
-                    <TextBlock x:Name="ColorEffectsSaturationToleranceLabel" Grid.Column="1" Text="0.20" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                    <TextBox x:Name="ColorEffectsSaturationToleranceInput" Grid.Column="1" Text="0.20" Margin="8,0,0,0" VerticalAlignment="Center" LostFocus="ColorEffectsNumericInput_LostFocus" KeyDown="ColorEffectsNumericInput_KeyDown"/>
                 </Grid>
 
                 <TextBlock Text="Value tolerance"/>
                 <Grid Margin="0,2,0,8">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="50"/>
+                        <ColumnDefinition Width="70"/>
                     </Grid.ColumnDefinitions>
                     <Slider x:Name="ColorEffectsValueToleranceSlider" Grid.Column="0" Minimum="0" Maximum="1" Value="0.2" TickFrequency="0.01" ValueChanged="ColorEffectsSettings_Changed"/>
-                    <TextBlock x:Name="ColorEffectsValueToleranceLabel" Grid.Column="1" Text="0.20" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                    <TextBox x:Name="ColorEffectsValueToleranceInput" Grid.Column="1" Text="0.20" Margin="8,0,0,0" VerticalAlignment="Center" LostFocus="ColorEffectsNumericInput_LostFocus" KeyDown="ColorEffectsNumericInput_KeyDown"/>
                 </Grid>
 
                 <TextBlock Text="Effect"/>
@@ -281,10 +281,10 @@
                 <Grid Margin="0,2,0,8">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="50"/>
+                        <ColumnDefinition Width="70"/>
                     </Grid.ColumnDefinitions>
                     <Slider x:Name="ColorEffectsStrengthSlider" Grid.Column="0" Minimum="0" Maximum="1" Value="0.5" TickFrequency="0.01" ValueChanged="ColorEffectsSettings_Changed"/>
-                    <TextBlock x:Name="ColorEffectsStrengthLabel" Grid.Column="1" Text="0.50" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                    <TextBox x:Name="ColorEffectsStrengthInput" Grid.Column="1" Text="0.50" Margin="8,0,0,0" VerticalAlignment="Center" LostFocus="ColorEffectsNumericInput_LostFocus" KeyDown="ColorEffectsNumericInput_KeyDown"/>
                 </Grid>
 
                 <TextBlock Text="Target / custom color (HEX #RRGGBB)"/>

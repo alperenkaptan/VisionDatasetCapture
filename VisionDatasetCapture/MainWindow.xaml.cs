@@ -10,6 +10,7 @@ using WPFImage = System.Windows.Controls.Image;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using WPFBrushes = System.Windows.Media.Brushes;
 using Microsoft.Win32;
 
@@ -42,6 +43,12 @@ namespace VisionDatasetCapture
         private PostProcessingSettings _currentPostProcessingSettings = new();
         private ColorEffectsSettings _currentColorEffectsSettings = new();
         private bool _isFreezeFrameActive;
+        private bool _isUpdatingColorInputs;
+        private bool _isUpdatingColorEffectsNumericInputs;
+        private readonly DispatcherTimer _colorEffectsUpdateDebounceTimer = new()
+        {
+            Interval = TimeSpan.FromMilliseconds(75)
+        };
 
         // Zoom state
         private double _zoomLevel = 1.0;
@@ -75,7 +82,10 @@ namespace VisionDatasetCapture
 
         public MainWindow()
         {
+            _colorEffectsUpdateDebounceTimer.Tick += ColorEffectsUpdateDebounceTimer_Tick;
+
             InitializeComponent();
+
             ConfigureCaptureModes();
             ConfigurePostProcessingUI();
             ApplySettings(AppCaptureSettingsStore.LoadOrDefault());
@@ -109,6 +119,7 @@ namespace VisionDatasetCapture
                     _keyboardHook?.Dispose();
                     _previewCts?.Dispose();
                     _captureCts?.Dispose();
+                    _colorEffectsUpdateDebounceTimer.Stop();
 
                     Close();
                 }
@@ -165,14 +176,14 @@ namespace VisionDatasetCapture
             modeCombo.ItemsSource = Enum.GetValues(typeof(ColorEffectMode));
             modeCombo.SelectedItem = colorFx.EffectMode;
 
-            var hueLabel = (TextBlock)FindName("ColorEffectsHueToleranceLabel");
-            var satLabel = (TextBlock)FindName("ColorEffectsSaturationToleranceLabel");
-            var valLabel = (TextBlock)FindName("ColorEffectsValueToleranceLabel");
-            var strengthLabel = (TextBlock)FindName("ColorEffectsStrengthLabel");
-            hueLabel.Text = colorFx.HueTolerance.ToString("F0", CultureInfo.InvariantCulture);
-            satLabel.Text = colorFx.SaturationTolerance.ToString("F2", CultureInfo.InvariantCulture);
-            valLabel.Text = colorFx.ValueTolerance.ToString("F2", CultureInfo.InvariantCulture);
-            strengthLabel.Text = colorFx.EffectStrength.ToString("F2", CultureInfo.InvariantCulture);
+            var hueInput = (TextBox)FindName("ColorEffectsHueToleranceInput");
+            var satInput = (TextBox)FindName("ColorEffectsSaturationToleranceInput");
+            var valInput = (TextBox)FindName("ColorEffectsValueToleranceInput");
+            var strengthInput = (TextBox)FindName("ColorEffectsStrengthInput");
+            hueInput.Text = colorFx.HueTolerance.ToString("F0", CultureInfo.InvariantCulture);
+            satInput.Text = colorFx.SaturationTolerance.ToString("F2", CultureInfo.InvariantCulture);
+            valInput.Text = colorFx.ValueTolerance.ToString("F2", CultureInfo.InvariantCulture);
+            strengthInput.Text = colorFx.EffectStrength.ToString("F2", CultureInfo.InvariantCulture);
         }
 
         private void SyncSelectedColorFromColorEffectsSettings()
@@ -185,6 +196,8 @@ namespace VisionDatasetCapture
             _selectedColor = selected;
             UpdateSelectedColorSwatch(selected);
             UpdateColorReadout(selected, _lastSamplePoint.HasValue ? (int)_lastSamplePoint.Value.X : 0, _lastSamplePoint.HasValue ? (int)_lastSamplePoint.Value.Y : 0);
+            UpdateColorInputsFromSelectedColor(selected);
+            UpdateMagnifierToSolidColor(selected);
         }
 
         private void ApplySettings(AppCaptureSettings settings)
@@ -1044,7 +1057,8 @@ namespace VisionDatasetCapture
 
         private void ColorEffectsSettings_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
         {
-            UpdateColorEffectsSettingsFromUI();
+            _colorEffectsUpdateDebounceTimer.Stop();
+            _colorEffectsUpdateDebounceTimer.Start();
         }
 
         private void ColorEffectsTargetHexTextBox_TextChanged(object sender, TextChangedEventArgs e)
@@ -1052,8 +1066,16 @@ namespace VisionDatasetCapture
             UpdateColorEffectsSettingsFromUI();
         }
 
+        private void ColorEffectsUpdateDebounceTimer_Tick(object? sender, EventArgs e)
+        {
+            _colorEffectsUpdateDebounceTimer.Stop();
+            UpdateColorEffectsSettingsFromUI();
+        }
+
         private void UpdateColorEffectsSettingsFromUI()
         {
+            _colorEffectsUpdateDebounceTimer.Stop();
+
             var enabledCheck = FindName("ColorEffectsEnabledCheckBox") as CheckBox;
             var maskCheck = FindName("ColorEffectsMaskOverlayCheckBox") as CheckBox;
             var freezeCheck = FindName("ColorEffectsFreezeFrameCheckBox") as CheckBox;
@@ -1063,10 +1085,10 @@ namespace VisionDatasetCapture
             var modeCombo = FindName("ColorEffectsModeComboBox") as ComboBox;
             var strengthSlider = FindName("ColorEffectsStrengthSlider") as Slider;
             var targetHexText = FindName("ColorEffectsTargetHexTextBox") as TextBox;
-            var hueLabel = FindName("ColorEffectsHueToleranceLabel") as TextBlock;
-            var satLabel = FindName("ColorEffectsSaturationToleranceLabel") as TextBlock;
-            var valLabel = FindName("ColorEffectsValueToleranceLabel") as TextBlock;
-            var strengthLabel = FindName("ColorEffectsStrengthLabel") as TextBlock;
+            var hueInput = FindName("ColorEffectsHueToleranceInput") as TextBox;
+            var satInput = FindName("ColorEffectsSaturationToleranceInput") as TextBox;
+            var valInput = FindName("ColorEffectsValueToleranceInput") as TextBox;
+            var strengthInput = FindName("ColorEffectsStrengthInput") as TextBox;
 
             if (enabledCheck == null || maskCheck == null || freezeCheck == null || hueSlider == null || satSlider == null ||
                 valSlider == null || modeCombo == null || strengthSlider == null || targetHexText == null)
@@ -1094,14 +1116,22 @@ namespace VisionDatasetCapture
                 TargetB = targetColor.TargetB
             };
 
-            if (hueLabel != null)
-                hueLabel.Text = _currentColorEffectsSettings.HueTolerance.ToString("F0", CultureInfo.InvariantCulture);
-            if (satLabel != null)
-                satLabel.Text = _currentColorEffectsSettings.SaturationTolerance.ToString("F2", CultureInfo.InvariantCulture);
-            if (valLabel != null)
-                valLabel.Text = _currentColorEffectsSettings.ValueTolerance.ToString("F2", CultureInfo.InvariantCulture);
-            if (strengthLabel != null)
-                strengthLabel.Text = _currentColorEffectsSettings.EffectStrength.ToString("F2", CultureInfo.InvariantCulture);
+            _isUpdatingColorEffectsNumericInputs = true;
+            try
+            {
+                if (hueInput != null)
+                    hueInput.Text = _currentColorEffectsSettings.HueTolerance.ToString("F0", CultureInfo.InvariantCulture);
+                if (satInput != null)
+                    satInput.Text = _currentColorEffectsSettings.SaturationTolerance.ToString("F2", CultureInfo.InvariantCulture);
+                if (valInput != null)
+                    valInput.Text = _currentColorEffectsSettings.ValueTolerance.ToString("F2", CultureInfo.InvariantCulture);
+                if (strengthInput != null)
+                    strengthInput.Text = _currentColorEffectsSettings.EffectStrength.ToString("F2", CultureInfo.InvariantCulture);
+            }
+            finally
+            {
+                _isUpdatingColorEffectsNumericInputs = false;
+            }
 
             _isFreezeFrameActive = _isCapturing && _currentColorEffectsSettings.FreezeFrame;
             UpdateUIState();
@@ -1139,6 +1169,245 @@ namespace VisionDatasetCapture
                 return false;
 
             return true;
+        }
+
+        private static bool TryParseRgba(string? text, out byte r, out byte g, out byte b, out byte a)
+        {
+            r = g = b = 0;
+            a = 255;
+            var value = text?.Trim();
+            if (string.IsNullOrWhiteSpace(value))
+                return false;
+
+            var parts = value.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 3 || parts.Length > 4)
+                return false;
+
+            if (!byte.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out r))
+                return false;
+            if (!byte.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out g))
+                return false;
+            if (!byte.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out b))
+                return false;
+
+            if (parts.Length == 4 && !byte.TryParse(parts[3], NumberStyles.Integer, CultureInfo.InvariantCulture, out a))
+                return false;
+
+            return true;
+        }
+
+        private static bool TryParseHsv(string? text, out double h, out double s, out double v)
+        {
+            h = s = v = 0;
+            var value = text?.Trim();
+            if (string.IsNullOrWhiteSpace(value))
+                return false;
+
+            var parts = value.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length != 3)
+                return false;
+
+            if (!double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out h))
+                return false;
+            if (!double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out s))
+                return false;
+            if (!double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out v))
+                return false;
+
+            h = Math.Clamp(h, 0, 360);
+            s = Math.Clamp(s, 0, 100);
+            v = Math.Clamp(v, 0, 100);
+            return true;
+        }
+
+        private static void HsvToRgb(double h, double sPct, double vPct, out byte r, out byte g, out byte b)
+        {
+            var s = sPct / 100.0;
+            var v = vPct / 100.0;
+            var c = v * s;
+            var x = c * (1 - Math.Abs((h / 60.0) % 2 - 1));
+            var m = v - c;
+
+            double rf, gf, bf;
+            if (h < 60) { rf = c; gf = x; bf = 0; }
+            else if (h < 120) { rf = x; gf = c; bf = 0; }
+            else if (h < 180) { rf = 0; gf = c; bf = x; }
+            else if (h < 240) { rf = 0; gf = x; bf = c; }
+            else if (h < 300) { rf = x; gf = 0; bf = c; }
+            else { rf = c; gf = 0; bf = x; }
+
+            r = (byte)Math.Clamp((int)Math.Round((rf + m) * 255), 0, 255);
+            g = (byte)Math.Clamp((int)Math.Round((gf + m) * 255), 0, 255);
+            b = (byte)Math.Clamp((int)Math.Round((bf + m) * 255), 0, 255);
+        }
+
+        private void UpdateColorInputsFromSelectedColor(System.Drawing.Color color)
+        {
+            _isUpdatingColorInputs = true;
+            try
+            {
+                var hexInput = FindName("ColorHexInput") as TextBox;
+                var rgbaInput = FindName("ColorRgbaInput") as TextBox;
+                var hsvInput = FindName("ColorHsvInput") as TextBox;
+
+                if (hexInput != null)
+                    hexInput.Text = $"#{color.R:X2}{color.G:X2}{color.B:X2}";
+                if (rgbaInput != null)
+                    rgbaInput.Text = $"{color.R},{color.G},{color.B},{color.A}";
+
+                var hsv = ToHsv(color);
+                if (hsvInput != null)
+                    hsvInput.Text = $"{hsv.H:F1},{hsv.S:F1},{hsv.V:F1}";
+            }
+            finally
+            {
+                _isUpdatingColorInputs = false;
+            }
+        }
+
+        private void ApplyManualSelectedColor(byte r, byte g, byte b, byte a)
+        {
+            var color = System.Drawing.Color.FromArgb(a, r, g, b);
+            _selectedColor = color;
+            _currentColorEffectsSettings.BaseR = r;
+            _currentColorEffectsSettings.BaseG = g;
+            _currentColorEffectsSettings.BaseB = b;
+
+            UpdateSelectedColorSwatch(color);
+            UpdateColorReadout(color, _lastSamplePoint.HasValue ? (int)_lastSamplePoint.Value.X : 0, _lastSamplePoint.HasValue ? (int)_lastSamplePoint.Value.Y : 0);
+            UpdateColorInputsFromSelectedColor(color);
+            UpdateMagnifierToSolidColor(color);
+
+            if (_isFreezeFrameActive)
+                ReprocessAndRefreshFrozenFrame();
+            else
+                UpdatePreviewIfAvailable();
+
+            TrySaveCurrentSettings();
+        }
+
+        private void ColorHexInput_LostFocus(object sender, RoutedEventArgs e)
+        {
+            if (_isUpdatingColorInputs)
+                return;
+
+            var input = sender as TextBox;
+            if (input == null)
+                return;
+
+            if (TryParseHexColor(input.Text, out var r, out var g, out var b))
+                ApplyManualSelectedColor(r, g, b, 255);
+            else if (_selectedColor.HasValue)
+                UpdateColorInputsFromSelectedColor(_selectedColor.Value);
+        }
+
+        private void ColorRgbaInput_LostFocus(object sender, RoutedEventArgs e)
+        {
+            if (_isUpdatingColorInputs)
+                return;
+
+            var input = sender as TextBox;
+            if (input == null)
+                return;
+
+            if (TryParseRgba(input.Text, out var r, out var g, out var b, out var a))
+                ApplyManualSelectedColor(r, g, b, a);
+            else if (_selectedColor.HasValue)
+                UpdateColorInputsFromSelectedColor(_selectedColor.Value);
+        }
+
+        private void ColorHsvInput_LostFocus(object sender, RoutedEventArgs e)
+        {
+            if (_isUpdatingColorInputs)
+                return;
+
+            var input = sender as TextBox;
+            if (input == null)
+                return;
+
+            if (TryParseHsv(input.Text, out var h, out var s, out var v))
+            {
+                HsvToRgb(h, s, v, out var r, out var g, out var b);
+                ApplyManualSelectedColor(r, g, b, 255);
+            }
+            else if (_selectedColor.HasValue)
+            {
+                UpdateColorInputsFromSelectedColor(_selectedColor.Value);
+            }
+        }
+
+        private void ColorInput_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Enter)
+            {
+                if (sender is TextBox tb)
+                    MoveFocus(new TraversalRequest(FocusNavigationDirection.Next));
+                e.Handled = true;
+            }
+        }
+
+        private void ColorEffectsNumericInput_LostFocus(object sender, RoutedEventArgs e)
+        {
+            if (_isUpdatingColorEffectsNumericInputs)
+                return;
+
+            ApplyColorEffectsNumericInputs();
+        }
+
+        private void ColorEffectsNumericInput_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key != Key.Enter)
+                return;
+
+            ApplyColorEffectsNumericInputs();
+            MoveFocus(new TraversalRequest(FocusNavigationDirection.Next));
+            e.Handled = true;
+        }
+
+        private void ApplyColorEffectsNumericInputs()
+        {
+            var hueSlider = FindName("ColorEffectsHueToleranceSlider") as Slider;
+            var satSlider = FindName("ColorEffectsSaturationToleranceSlider") as Slider;
+            var valSlider = FindName("ColorEffectsValueToleranceSlider") as Slider;
+            var strengthSlider = FindName("ColorEffectsStrengthSlider") as Slider;
+            var hueInput = FindName("ColorEffectsHueToleranceInput") as TextBox;
+            var satInput = FindName("ColorEffectsSaturationToleranceInput") as TextBox;
+            var valInput = FindName("ColorEffectsValueToleranceInput") as TextBox;
+            var strengthInput = FindName("ColorEffectsStrengthInput") as TextBox;
+
+            if (hueSlider == null || satSlider == null || valSlider == null || strengthSlider == null ||
+                hueInput == null || satInput == null || valInput == null || strengthInput == null)
+                return;
+
+            _isUpdatingColorEffectsNumericInputs = true;
+            try
+            {
+                if (double.TryParse(hueInput.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var hue))
+                    hueSlider.Value = Math.Clamp(hue, hueSlider.Minimum, hueSlider.Maximum);
+                else
+                    hueInput.Text = hueSlider.Value.ToString("F0", CultureInfo.InvariantCulture);
+
+                if (double.TryParse(satInput.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var sat))
+                    satSlider.Value = Math.Clamp(sat, satSlider.Minimum, satSlider.Maximum);
+                else
+                    satInput.Text = satSlider.Value.ToString("F2", CultureInfo.InvariantCulture);
+
+                if (double.TryParse(valInput.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var val))
+                    valSlider.Value = Math.Clamp(val, valSlider.Minimum, valSlider.Maximum);
+                else
+                    valInput.Text = valSlider.Value.ToString("F2", CultureInfo.InvariantCulture);
+
+                if (double.TryParse(strengthInput.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var strength))
+                    strengthSlider.Value = Math.Clamp(strength, strengthSlider.Minimum, strengthSlider.Maximum);
+                else
+                    strengthInput.Text = strengthSlider.Value.ToString("F2", CultureInfo.InvariantCulture);
+            }
+            finally
+            {
+                _isUpdatingColorEffectsNumericInputs = false;
+            }
+
+            UpdateColorEffectsSettingsFromUI();
         }
 
         private void UpdatePreviewIfAvailable()
@@ -1402,6 +1671,27 @@ namespace VisionDatasetCapture
             }
         }
 
+        private void UpdateMagnifierToSolidColor(System.Drawing.Color color)
+        {
+            var tileSize = 16;
+            using var solid = new Bitmap(tileSize, tileSize, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            using (var g = Graphics.FromImage(solid))
+            {
+                g.Clear(System.Drawing.Color.FromArgb(color.A, color.R, color.G, color.B));
+            }
+
+            using var magnifier = BuildMagnifierBitmap(solid, tileSize / 2, tileSize / 2);
+            var magnifierBitmap = BitmapToBitmapImage(magnifier);
+
+            var magnifierImage = FindName("ColorMagnifierImage") as WPFImage;
+            if (magnifierImage != null)
+                magnifierImage.Source = magnifierBitmap;
+
+            var floatingMagnifierImage = FindName("FloatingMagnifierImage") as WPFImage;
+            if (floatingMagnifierImage != null)
+                floatingMagnifierImage.Source = magnifierBitmap;
+        }
+
         private bool TrySampleColorAtScreenPoint(int screenX, int screenY, out System.Drawing.Color color, out int x, out int y)
         {
             color = System.Drawing.Color.Transparent;
@@ -1520,6 +1810,7 @@ namespace VisionDatasetCapture
                 _selectedColor = selected;
                 UpdateSelectedColorSwatch(selected);
                 UpdateColorReadout(selected, sx, sy);
+                UpdateColorInputsFromSelectedColor(selected);
 
                 // Sync picked color as color-effects base color
                 _currentColorEffectsSettings.BaseR = selected.R;
