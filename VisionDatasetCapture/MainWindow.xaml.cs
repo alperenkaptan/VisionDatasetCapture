@@ -39,6 +39,7 @@ namespace VisionDatasetCapture
 
         private Bitmap? _latestProcessedFrame;
         private PostProcessingSettings _currentPostProcessingSettings = new();
+        private ColorEffectsSettings _currentColorEffectsSettings = new();
 
         // Zoom state
         private double _zoomLevel = 1.0;
@@ -144,6 +145,32 @@ namespace VisionDatasetCapture
             ((TextBox)FindName("ResizeHeightTextBox")).Text = postProc.Resize.Height.ToString();
         }
 
+        private void ConfigureColorEffectsUI()
+        {
+            var colorFx = _currentColorEffectsSettings;
+
+            ((CheckBox)FindName("ColorEffectsEnabledCheckBox")).IsChecked = colorFx.Enabled;
+            ((CheckBox)FindName("ColorEffectsMaskOverlayCheckBox")).IsChecked = colorFx.ShowMaskOverlay;
+            ((Slider)FindName("ColorEffectsHueToleranceSlider")).Value = colorFx.HueTolerance;
+            ((Slider)FindName("ColorEffectsSaturationToleranceSlider")).Value = colorFx.SaturationTolerance;
+            ((Slider)FindName("ColorEffectsValueToleranceSlider")).Value = colorFx.ValueTolerance;
+            ((Slider)FindName("ColorEffectsStrengthSlider")).Value = colorFx.EffectStrength;
+            ((TextBox)FindName("ColorEffectsTargetHexTextBox")).Text = $"#{colorFx.TargetR:X2}{colorFx.TargetG:X2}{colorFx.TargetB:X2}";
+
+            var modeCombo = (ComboBox)FindName("ColorEffectsModeComboBox");
+            modeCombo.ItemsSource = Enum.GetValues(typeof(ColorEffectMode));
+            modeCombo.SelectedItem = colorFx.EffectMode;
+
+            var hueLabel = (TextBlock)FindName("ColorEffectsHueToleranceLabel");
+            var satLabel = (TextBlock)FindName("ColorEffectsSaturationToleranceLabel");
+            var valLabel = (TextBlock)FindName("ColorEffectsValueToleranceLabel");
+            var strengthLabel = (TextBlock)FindName("ColorEffectsStrengthLabel");
+            hueLabel.Text = colorFx.HueTolerance.ToString("F0", CultureInfo.InvariantCulture);
+            satLabel.Text = colorFx.SaturationTolerance.ToString("F2", CultureInfo.InvariantCulture);
+            valLabel.Text = colorFx.ValueTolerance.ToString("F2", CultureInfo.InvariantCulture);
+            strengthLabel.Text = colorFx.EffectStrength.ToString("F2", CultureInfo.InvariantCulture);
+        }
+
         private void ApplySettings(AppCaptureSettings settings)
         {
             var sanitized = SanitizeSettings(settings);
@@ -157,6 +184,10 @@ namespace VisionDatasetCapture
             // Load post-processing settings
             _currentPostProcessingSettings = sanitized.PostProcessing.Clone();
             ConfigurePostProcessingUI();
+
+            // Load color effects settings (separate stage)
+            _currentColorEffectsSettings = (sanitized.ColorEffects ?? new ColorEffectsSettings()).Clone();
+            ConfigureColorEffectsUI();
 
             // Load zoom level
             _zoomLevel = sanitized.ZoomLevel;
@@ -179,6 +210,7 @@ namespace VisionDatasetCapture
                     ? NormalizeManualKeyText(key)
                     : "K",
                 PostProcessing = settings.PostProcessing ?? new PostProcessingSettings(),
+                ColorEffects = settings.ColorEffects ?? new ColorEffectsSettings(),
                 ZoomLevel = settings.ZoomLevel >= 0.1 && settings.ZoomLevel <= 5.0 ? settings.ZoomLevel : 1.0
             };
 
@@ -615,7 +647,9 @@ namespace VisionDatasetCapture
                                     try
                                     {
                                         var settingsSnapshot = _currentPostProcessingSettings.Clone();
-                                        using var processed = ImageProcessor.Process(bitmap, settingsSnapshot);
+                                        var colorFxSnapshot = _currentColorEffectsSettings.Clone();
+                                        using var colorFxFirst = ColorEffectsProcessor.Apply(bitmap, colorFxSnapshot);
+                                        using var processed = ImageProcessor.Process(colorFxFirst, settingsSnapshot);
 
                                         _latestProcessedFrame?.Dispose();
                                         _latestProcessedFrame = (DrawingBitmap)processed.Clone();
@@ -723,9 +757,12 @@ namespace VisionDatasetCapture
 
                 token.ThrowIfCancellationRequested();
 
-                // Process the frame using current settings
+                // Process the frame using specific-to-general order:
+                // 1) color effects on raw image, 2) global post-processing on the result
                 var settingsSnapshot = _currentPostProcessingSettings.Clone();
-                using var processedBitmap = ImageProcessor.Process(rawBitmap, settingsSnapshot);
+                var colorFxSnapshot = _currentColorEffectsSettings.Clone();
+                using var colorEffectsFirstBitmap = ColorEffectsProcessor.Apply(rawBitmap, colorFxSnapshot);
+                using var processedBitmap = ImageProcessor.Process(colorEffectsFirstBitmap, settingsSnapshot);
 
                 token.ThrowIfCancellationRequested();
 
@@ -826,6 +863,7 @@ namespace VisionDatasetCapture
                     ? NormalizeManualKeyText(key)
                     : "K",
                 PostProcessing = _currentPostProcessingSettings.Clone(),
+                ColorEffects = _currentColorEffectsSettings.Clone(),
                 ZoomLevel = _zoomLevel
             };
 
@@ -959,6 +997,97 @@ namespace VisionDatasetCapture
 
             UpdatePreviewIfAvailable();
             TrySaveCurrentSettings();
+        }
+
+        private void ColorEffectsSettings_Changed(object sender, RoutedEventArgs e)
+        {
+            UpdateColorEffectsSettingsFromUI();
+        }
+
+        private void ColorEffectsSettings_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            UpdateColorEffectsSettingsFromUI();
+        }
+
+        private void ColorEffectsTargetHexTextBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            UpdateColorEffectsSettingsFromUI();
+        }
+
+        private void UpdateColorEffectsSettingsFromUI()
+        {
+            var enabledCheck = FindName("ColorEffectsEnabledCheckBox") as CheckBox;
+            var maskCheck = FindName("ColorEffectsMaskOverlayCheckBox") as CheckBox;
+            var hueSlider = FindName("ColorEffectsHueToleranceSlider") as Slider;
+            var satSlider = FindName("ColorEffectsSaturationToleranceSlider") as Slider;
+            var valSlider = FindName("ColorEffectsValueToleranceSlider") as Slider;
+            var modeCombo = FindName("ColorEffectsModeComboBox") as ComboBox;
+            var strengthSlider = FindName("ColorEffectsStrengthSlider") as Slider;
+            var targetHexText = FindName("ColorEffectsTargetHexTextBox") as TextBox;
+            var hueLabel = FindName("ColorEffectsHueToleranceLabel") as TextBlock;
+            var satLabel = FindName("ColorEffectsSaturationToleranceLabel") as TextBlock;
+            var valLabel = FindName("ColorEffectsValueToleranceLabel") as TextBlock;
+            var strengthLabel = FindName("ColorEffectsStrengthLabel") as TextBlock;
+
+            if (enabledCheck == null || maskCheck == null || hueSlider == null || satSlider == null ||
+                valSlider == null || modeCombo == null || strengthSlider == null || targetHexText == null)
+                return;
+
+            var targetColor = TryParseHexColor(targetHexText.Text, out var tr, out var tg, out var tb)
+                ? (TargetR: tr, TargetG: tg, TargetB: tb)
+                : (TargetR: _currentColorEffectsSettings.TargetR, TargetG: _currentColorEffectsSettings.TargetG, TargetB: _currentColorEffectsSettings.TargetB);
+
+            _currentColorEffectsSettings = new ColorEffectsSettings
+            {
+                Enabled = enabledCheck.IsChecked ?? false,
+                ShowMaskOverlay = maskCheck.IsChecked ?? false,
+                BaseR = _currentColorEffectsSettings.BaseR,
+                BaseG = _currentColorEffectsSettings.BaseG,
+                BaseB = _currentColorEffectsSettings.BaseB,
+                HueTolerance = hueSlider.Value,
+                SaturationTolerance = satSlider.Value,
+                ValueTolerance = valSlider.Value,
+                EffectMode = modeCombo.SelectedItem is ColorEffectMode mode ? mode : ColorEffectMode.Highlight,
+                EffectStrength = strengthSlider.Value,
+                TargetR = targetColor.TargetR,
+                TargetG = targetColor.TargetG,
+                TargetB = targetColor.TargetB
+            };
+
+            if (hueLabel != null)
+                hueLabel.Text = _currentColorEffectsSettings.HueTolerance.ToString("F0", CultureInfo.InvariantCulture);
+            if (satLabel != null)
+                satLabel.Text = _currentColorEffectsSettings.SaturationTolerance.ToString("F2", CultureInfo.InvariantCulture);
+            if (valLabel != null)
+                valLabel.Text = _currentColorEffectsSettings.ValueTolerance.ToString("F2", CultureInfo.InvariantCulture);
+            if (strengthLabel != null)
+                strengthLabel.Text = _currentColorEffectsSettings.EffectStrength.ToString("F2", CultureInfo.InvariantCulture);
+
+            UpdatePreviewIfAvailable();
+            TrySaveCurrentSettings();
+        }
+
+        private static bool TryParseHexColor(string? hex, out byte r, out byte g, out byte b)
+        {
+            r = g = b = 0;
+            var value = hex?.Trim();
+            if (string.IsNullOrWhiteSpace(value))
+                return false;
+
+            if (value.StartsWith("#", StringComparison.Ordinal))
+                value = value.Substring(1);
+
+            if (value.Length != 6)
+                return false;
+
+            if (!byte.TryParse(value.Substring(0, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out r))
+                return false;
+            if (!byte.TryParse(value.Substring(2, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out g))
+                return false;
+            if (!byte.TryParse(value.Substring(4, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out b))
+                return false;
+
+            return true;
         }
 
         private void UpdatePreviewIfAvailable()
@@ -1311,9 +1440,21 @@ namespace VisionDatasetCapture
                 UpdateSelectedColorSwatch(selected);
                 UpdateColorReadout(selected, sx, sy);
 
+                // Sync picked color as color-effects base color
+                _currentColorEffectsSettings.BaseR = selected.R;
+                _currentColorEffectsSettings.BaseG = selected.G;
+                _currentColorEffectsSettings.BaseB = selected.B;
+
+                // Reflect color effects UI state immediately
+                var targetHexTextBox = FindName("ColorEffectsTargetHexTextBox") as TextBox;
+                if (targetHexTextBox != null && string.IsNullOrWhiteSpace(targetHexTextBox.Text))
+                    targetHexTextBox.Text = $"#{selected.R:X2}{selected.G:X2}{selected.B:X2}";
+
                 // Gracefully stop eyedropper and remove overlay/popup.
                 CancelEyedropperMode();
                 SetEyedropperUiState("Selected", WPFBrushes.DarkGreen);
+                UpdatePreviewIfAvailable();
+                TrySaveCurrentSettings();
             }
         }
 

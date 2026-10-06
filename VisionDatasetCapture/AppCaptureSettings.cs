@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -73,13 +74,67 @@ namespace VisionDatasetCapture
         }
     }
 
+    public enum ColorEffectMode
+    {
+        Highlight,
+        ReplaceColor,
+        Grayscale,
+        Brighten,
+        Darken,
+        CustomColor
+    }
+
+    public class ColorEffectsSettings
+    {
+        public bool Enabled { get; set; } = false;
+        public bool ShowMaskOverlay { get; set; } = false;
+
+        // Base selected color (from eyedropper)
+        public byte BaseR { get; set; } = 255;
+        public byte BaseG { get; set; } = 255;
+        public byte BaseB { get; set; } = 255;
+
+        // HSV tolerances
+        public double HueTolerance { get; set; } = 15;         // degrees, 0-180
+        public double SaturationTolerance { get; set; } = 0.20; // 0-1
+        public double ValueTolerance { get; set; } = 0.20;      // 0-1
+
+        public ColorEffectMode EffectMode { get; set; } = ColorEffectMode.Highlight;
+        public double EffectStrength { get; set; } = 0.5;       // 0-1
+
+        // Target/custom effect color
+        public byte TargetR { get; set; } = 255;
+        public byte TargetG { get; set; } = 255;
+        public byte TargetB { get; set; } = 0;
+
+        public ColorEffectsSettings Clone()
+        {
+            return new ColorEffectsSettings
+            {
+                Enabled = Enabled,
+                ShowMaskOverlay = ShowMaskOverlay,
+                BaseR = BaseR,
+                BaseG = BaseG,
+                BaseB = BaseB,
+                HueTolerance = HueTolerance,
+                SaturationTolerance = SaturationTolerance,
+                ValueTolerance = ValueTolerance,
+                EffectMode = EffectMode,
+                EffectStrength = EffectStrength,
+                TargetR = TargetR,
+                TargetG = TargetG,
+                TargetB = TargetB
+            };
+        }
+    }
+
     public class AppCaptureSettings
     {
         /// <summary>
         /// Schema version for forward/backward compatibility during import/export.
         /// </summary>
         [JsonPropertyName("settingsVersion")]
-        public int SettingsVersion { get; set; } = 1;
+        public int SettingsVersion { get; set; } = 2;
 
         public int? SelectedProcessId { get; set; }
         public string DatasetName { get; set; } = "";
@@ -87,6 +142,7 @@ namespace VisionDatasetCapture
         public int IntervalSeconds { get; set; } = 1;
         public string ManualKey { get; set; } = "K";
         public PostProcessingSettings PostProcessing { get; set; } = new();
+        public ColorEffectsSettings ColorEffects { get; set; } = new();
 
         /// <summary>
         /// Preview zoom level (1.0 = 100% / no zoom).
@@ -191,6 +247,15 @@ namespace VisionDatasetCapture
             settings.PostProcessing ??= new PostProcessingSettings();
             settings.PostProcessing.Crop ??= new PostProcessingCropSettings();
             settings.PostProcessing.Resize ??= new PostProcessingResizeSettings();
+
+            // Ensure ColorEffectsSettings is not null
+            settings.ColorEffects ??= new ColorEffectsSettings();
+
+            // Clamp color effects ranges
+            settings.ColorEffects.HueTolerance = Math.Clamp(settings.ColorEffects.HueTolerance, 0, 180);
+            settings.ColorEffects.SaturationTolerance = Math.Clamp(settings.ColorEffects.SaturationTolerance, 0, 1);
+            settings.ColorEffects.ValueTolerance = Math.Clamp(settings.ColorEffects.ValueTolerance, 0, 1);
+            settings.ColorEffects.EffectStrength = Math.Clamp(settings.ColorEffects.EffectStrength, 0, 1);
 
             // Ensure zoom level is valid
             if (settings.ZoomLevel < 0.1)
