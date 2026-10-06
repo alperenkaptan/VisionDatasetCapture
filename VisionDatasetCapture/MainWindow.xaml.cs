@@ -125,37 +125,6 @@ namespace VisionDatasetCapture
         private async void ProcessComboBox_SelectionChanged(object? sender, SelectionChangedEventArgs e)
         {
             UpdateUIState();
-
-            // Stop current preview if capturing
-            if (_isCapturing)
-                return;
-
-            // If a valid process is selected, start preview capture
-            if (ProcessComboBox.SelectedItem is ProcessInfo selected)
-            {
-                var handle = ProcessSelector.GetWindowHandleForProcessId(selected.ProcessId);
-                if (handle == IntPtr.Zero)
-                    handle = selected.WindowHandle;
-
-                if (handle != IntPtr.Zero)
-                {
-                    // Stop any existing preview
-                    var existingCts = _cts;
-                    _cts = null;
-                    if (existingCts != null)
-                    {
-                        existingCts.Cancel();
-                        if (_previewLoopTask != null)
-                            await _previewLoopTask;
-                    }
-
-                    // Start new preview-only capture
-                    _activeHandle = handle;
-                    var cts = new CancellationTokenSource();
-                    _cts = cts;
-                    _previewLoopTask = Task.Run(() => PreviewLoopAsync(cts));
-                }
-            }
         }
 
         private void ProcessComboBox_DropDownOpened(object? sender, EventArgs e)
@@ -163,7 +132,34 @@ namespace VisionDatasetCapture
             RefreshProcessList((ProcessComboBox.SelectedItem as ProcessInfo)?.ProcessId);
         }
 
-        private void CaptureModeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        private async void StartPreviewButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (_isCapturing)
+                await StopCaptureAsync();
+            else
+                StartPreview();
+        }
+
+        private void StartPreview()
+        {
+            // Stop any existing preview
+            if (ProcessComboBox.SelectedItem is not ProcessInfo selected)
+                return;
+
+            var handle = ProcessSelector.GetWindowHandleForProcessId(selected.ProcessId);
+            if (handle == IntPtr.Zero)
+                handle = selected.WindowHandle;
+
+            if (handle == IntPtr.Zero)
+                return;
+
+            _isCapturing = true;
+            _activeHandle = handle;
+            var cts = new CancellationTokenSource();
+            _cts = cts;
+            _previewLoopTask = Task.Run(() => PreviewLoopAsync(cts));
+            UpdateUIState();
+        }        private void CaptureModeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             UpdateCaptureModeInputs();
             UpdateUIState();
@@ -372,11 +368,15 @@ namespace VisionDatasetCapture
                             _latestProcessedFrame?.Dispose();
                             _latestProcessedFrame = (DrawingBitmap)processed.Clone();
 
+                            // Make safe copies while holding the lock
+                            var rawCopy = (Bitmap)_latestRawFrame.Clone();
+                            var processedCopy = (Bitmap)_latestProcessedFrame.Clone();
+
                             _ = Dispatcher.BeginInvoke(() =>
                             {
                                 if (ReferenceEquals(_cts, cts))
                                 {
-                                    UpdatePreview();
+                                    UpdatePreview(rawCopy, processedCopy);
                                 }
                             });
                         }
@@ -441,6 +441,10 @@ namespace VisionDatasetCapture
                 _captureCount++;
                 var saved = _captureCount;
 
+                // Make safe copies for preview (while holding lock)
+                var rawCopy = (Bitmap)rawBitmap.Clone();
+                var processedCopy = (Bitmap)processedBitmap.Clone();
+
                 // Update UI
                 _ = Dispatcher.BeginInvoke(() =>
                 {
@@ -448,7 +452,7 @@ namespace VisionDatasetCapture
                     {
                         CapturedLabel.Text = saved.ToString(CultureInfo.InvariantCulture);
                         LastFileLabel.Text = filename;
-                        UpdatePreview(); // Update preview with new frame
+                        UpdatePreview(rawCopy, processedCopy); // Update preview with new frame
                     }
                 });
 
@@ -656,40 +660,65 @@ namespace VisionDatasetCapture
             if (gammaLabel != null)
                 gammaLabel.Text = _currentPostProcessingSettings.Gamma.ToString("F1");
 
-            UpdatePreview();
+            UpdatePreviewIfAvailable();
             TrySaveCurrentSettings();
         }
 
-        private void UpdatePreview()
+        private void UpdatePreviewIfAvailable()
         {
-            if (_latestRawFrame == null)
-                return;
+            // Safely attempt to get and clone frames without holding lock
+            // (called from UI thread only, not from preview loop)
+            Bitmap? rawCopy = null;
+            Bitmap? processedCopy = null;
 
+            try
+            {
+                if (_latestRawFrame != null)
+                    rawCopy = (Bitmap)_latestRawFrame.Clone();
+                if (_latestProcessedFrame != null)
+                    processedCopy = (Bitmap)_latestProcessedFrame.Clone();
+                else if (rawCopy != null)
+                    processedCopy = (Bitmap)rawCopy.Clone();
+
+                if (rawCopy != null && processedCopy != null)
+                    UpdatePreview(rawCopy, processedCopy);
+                else
+                {
+                    rawCopy?.Dispose();
+                    processedCopy?.Dispose();
+                }
+            }
+            catch
+            {
+                // If frames are disposed during access, silently skip update
+                rawCopy?.Dispose();
+                processedCopy?.Dispose();
+            }
+        }
+
+        private void UpdatePreview(Bitmap rawFrame, Bitmap processedFrame)
+        {
             var processedControl = FindName("ProcessedPreviewImage") as WPFImage;
             var originalControl = FindName("OriginalPreviewImage") as WPFImage;
             if (processedControl == null || originalControl == null)
+            {
+                rawFrame?.Dispose();
+                processedFrame?.Dispose();
                 return;
+            }
 
-            Bitmap? processedBitmap = null;
-            Bitmap? originalBitmap = null;
             try
             {
-                // Always show both frames
-                originalBitmap = (Bitmap)_latestRawFrame.Clone();
-                processedBitmap = _latestProcessedFrame != null 
-                    ? (Bitmap)_latestProcessedFrame.Clone() 
-                    : (Bitmap)_latestRawFrame.Clone();
-
-                var processedImage = BitmapToBitmapImage(processedBitmap);
-                var originalImage = BitmapToBitmapImage(originalBitmap);
+                var processedImage = BitmapToBitmapImage(processedFrame);
+                var originalImage = BitmapToBitmapImage(rawFrame);
 
                 processedControl.Source = processedImage;
                 originalControl.Source = originalImage;
             }
             finally
             {
-                processedBitmap?.Dispose();
-                originalBitmap?.Dispose();
+                rawFrame?.Dispose();
+                processedFrame?.Dispose();
             }
         }
 
@@ -711,25 +740,36 @@ namespace VisionDatasetCapture
 
         private void UpdateUIState()
         {
-            var selectedMode = _isCapturing ? _activeCaptureMode : GetSelectedCaptureMode();
+            var selectedMode = GetSelectedCaptureMode();
             var hasValidProcess = ProcessComboBox.SelectedItem is ProcessInfo;
 
-            ToggleButton.Content = _isCapturing ? "Stop" : "Start";
-            ToggleButton.Background = _isCapturing ? WPFBrushes.OrangeRed : WPFBrushes.CornflowerBlue;
-            ToggleButton.IsEnabled = hasValidProcess;
+            // Start Preview button state
+            var startPreviewButton = FindName("StartPreviewButton") as Button;
+            if (startPreviewButton != null)
+            {
+                startPreviewButton.Content = _isCapturing ? "Stop Capture" : "Start Capture";
+                startPreviewButton.Background = _isCapturing ? WPFBrushes.OrangeRed : WPFBrushes.CornflowerBlue;
+                startPreviewButton.IsEnabled = hasValidProcess;
+            }
 
+            // Toggle button for dataset capture (only enabled when previewing)
+            ToggleButton.Content = "Start Capture";
+            ToggleButton.Background = WPFBrushes.CornflowerBlue;
+            ToggleButton.IsEnabled = _isCapturing;
+
+            // Process selector: only enabled when not previewing
             ProcessComboBox.IsEnabled = !_isCapturing;
-            DatasetNameTextBox.IsEnabled = !_isCapturing;
-            CaptureModeSelector.IsEnabled = !_isCapturing;
-            IntervalTextBox.IsEnabled = !_isCapturing && selectedMode == CaptureMode.AutoTimed;
-            ManualKeyInput.IsEnabled = !_isCapturing && selectedMode == CaptureMode.ManualKeystroke;
 
-            // Disable all post-processing controls during active capture
-            SetPostProcessingControlsEnabled(!_isCapturing);
+            // Settings: only enabled when previewing
+            DatasetNameTextBox.IsEnabled = _isCapturing;
+            CaptureModeSelector.IsEnabled = _isCapturing;
+            IntervalTextBox.IsEnabled = _isCapturing && selectedMode == CaptureMode.AutoTimed;
+            ManualKeyInput.IsEnabled = _isCapturing && selectedMode == CaptureMode.ManualKeystroke;
 
-            StateLabel.Text = _isCapturing
-                ? selectedMode == CaptureMode.AutoTimed ? "Capturing" : "Listening"
-                : "Preview";
+            // Post-processing controls: only enabled when previewing
+            SetPostProcessingControlsEnabled(_isCapturing);
+
+            StateLabel.Text = _isCapturing ? "Previewing" : "Stopped";
             CaptureModeStatusLabel.Text = GetCaptureModeDisplayName(selectedMode);
 
             if (!_isCapturing)

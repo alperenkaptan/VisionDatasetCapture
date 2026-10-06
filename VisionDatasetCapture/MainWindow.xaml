@@ -36,6 +36,8 @@
                 <TextBlock Text="Process / window"/>
                 <ComboBox x:Name="ProcessComboBox" Margin="0,2,0,10" DropDownOpened="ProcessComboBox_DropDownOpened" SelectionChanged="ProcessComboBox_SelectionChanged"/>
 
+                <Button x:Name="StartPreviewButton" Content="Start Capture" Height="34" Click="StartPreviewButton_Click" Margin="0,0,0,15" Background="CornflowerBlue" Foreground="White" FontWeight="Bold"/>
+
                 <TextBlock Text="Dataset / class name"/>
                 <TextBox x:Name="DatasetNameTextBox" Margin="0,2,0,10"/>
 
