@@ -1,38 +1,41 @@
 # VisionDatasetCapture
 
-Minimal WPF (.NET 6) utility that captures screenshots of a selected Windows process window at a fixed interval and saves them as numbered PNGs. Use it to collect image datasets for computer-vision / object-detection work. It does no detection or training.
+VisionDatasetCapture is a WPF (.NET 6) app for capturing Windows window screenshots and building image datasets for computer vision work.
 
-## Usage
+## Capabilities
 
-1. Pick a process/window from the dropdown (the list refreshes each time it is opened).
-2. Enter a dataset/class name, e.g. `Bobber`.
-3. Enter an integer interval in seconds.
-4. Press **Start**. The first screenshot is taken immediately, then one per interval.
-5. Press **Stop** to end the session.
+- Capture screenshots from a selected process window
+- Auto-timed capture or manual keystroke capture
+- Live preview stream with zoom and pan
+- Eyedropper / color picker for sampling pixels from the preview
+- Multi-rule color effects with HSV tolerances
+- Post-processing pipeline for crop, brightness, contrast, saturation, gamma, grayscale, and resize
+- Freeze-frame and mask-overlay options for color effects
+- Export, import, and reset capture settings
+- Save numbered PNG files without overwriting previous sessions
 
-Images are saved to `<app output dir>\<DatasetName>\<DatasetName>_N.png`
-(e.g. `bin\Debug\net6.0-windows\Bobber\Bobber_0.png`).
+## Typical workflow
 
-On every Start the folder is scanned for `{DatasetName}_N.png`; numbering continues from the highest N + 1, so existing images are never overwritten across sessions.
+1. Select a process/window.
+2. Choose the capture mode.
+3. Configure post-processing or color effects if needed.
+4. Enter a dataset name.
+5. Click **Start** and review the live preview.
+6. Click **Stop** when finished.
 
-## How it works
+## Output
 
-| File | Role |
-|---|---|
-| `MainWindow.xaml(.cs)` | Single window, input validation, Start/Stop toggle, status area |
-| `ProcessSelector.cs` | Lists processes that have a main window title |
-| `ScreenshotCapture.cs` | Copies the window's on-screen rectangle from the composited desktop (`CopyFromScreen` + DWM frame bounds), so GPU/DirectX content is captured |
-| `DatasetWriter.cs` | Name validation, folder creation, next-number lookup, PNG saving |
+Images are saved to:
 
-Performance notes:
-- The window handle is resolved once at Start and reused for every frame.
-- Capture and PNG encoding run on a background task driven by a `PeriodicTimer`, so the UI never blocks and captures never overlap.
-- UI updates are posted asynchronously; Stop cancels the loop via `CancellationToken`.
-- The loop stops itself with a visible error if the window closes, is minimized, capture fails, or a file cannot be written.
+`<app output dir>\<DatasetName>\<DatasetName>_N.png`
 
-## Limitations
+Example:
 
-- Minimized windows cannot be captured (capture stops with an error).
-- The window must be visible and not covered by other windows, since the screen region is copied. Exclusive-fullscreen or DRM-protected content may still be black.
-- The captured image is the full window including borders/title bar.
+`bin\Debug\net6.0-windows\Bobber\Bobber_0.png`
+
+## Notes
+
+- The app captures the visible window area.
+- Minimized windows cannot be captured.
+- It is intended for dataset capture and image preparation, not model training or detection.
 
