@@ -34,17 +34,12 @@ namespace VisionDatasetCapture
         private Bitmap? _latestRawFrame;
         private Bitmap? _latestProcessedFrame;
         private PostProcessingSettings _currentPostProcessingSettings = new();
-        private PreviewMode _previewMode = PreviewMode.Processed;
 
         private ComboBox CaptureModeSelector => (ComboBox)FindName("CaptureModeComboBox");
         private StackPanel IntervalSettingsPanel => (StackPanel)FindName("IntervalPanel");
         private StackPanel ManualKeySettingsPanel => (StackPanel)FindName("ManualKeyPanel");
         private TextBox ManualKeyInput => (TextBox)FindName("ManualKeyTextBox");
         private TextBlock CaptureModeStatusLabel => (TextBlock)FindName("ModeLabel");
-
-        private WPFImage PreviewImageControl => (WPFImage)FindName("PreviewImage");
-
-        private enum PreviewMode { Original, Processed, Split }
 
         public MainWindow()
         {
@@ -53,7 +48,6 @@ namespace VisionDatasetCapture
             ConfigurePostProcessingUI();
             ApplySettings(AppCaptureSettingsStore.LoadOrDefault());
             UpdateUIState();
-            InitializePreviewMode();
         }
 
         private void ConfigureCaptureModes()
@@ -82,12 +76,6 @@ namespace VisionDatasetCapture
             ((CheckBox)FindName("ResizeEnabledCheckBox")).IsChecked = postProc.Resize.Enabled;
             ((TextBox)FindName("ResizeWidthTextBox")).Text = postProc.Resize.Width.ToString();
             ((TextBox)FindName("ResizeHeightTextBox")).Text = postProc.Resize.Height.ToString();
-        }
-
-        private void InitializePreviewMode()
-        {
-            ((RadioButton)FindName("PreviewModeProcessed")).IsChecked = true;
-            _previewMode = PreviewMode.Processed;
         }
 
         private void ApplySettings(AppCaptureSettings settings)
@@ -134,10 +122,45 @@ namespace VisionDatasetCapture
             ProcessComboBox.SelectedIndex = index >= 0 ? index : (processes.Count > 0 ? 0 : -1);
         }
 
+        private async void ProcessComboBox_SelectionChanged(object? sender, SelectionChangedEventArgs e)
+        {
+            UpdateUIState();
+
+            // Stop current preview if capturing
+            if (_isCapturing)
+                return;
+
+            // If a valid process is selected, start preview capture
+            if (ProcessComboBox.SelectedItem is ProcessInfo selected)
+            {
+                var handle = ProcessSelector.GetWindowHandleForProcessId(selected.ProcessId);
+                if (handle == IntPtr.Zero)
+                    handle = selected.WindowHandle;
+
+                if (handle != IntPtr.Zero)
+                {
+                    // Stop any existing preview
+                    var existingCts = _cts;
+                    _cts = null;
+                    if (existingCts != null)
+                    {
+                        existingCts.Cancel();
+                        if (_previewLoopTask != null)
+                            await _previewLoopTask;
+                    }
+
+                    // Start new preview-only capture
+                    _activeHandle = handle;
+                    var cts = new CancellationTokenSource();
+                    _cts = cts;
+                    _previewLoopTask = Task.Run(() => PreviewLoopAsync(cts));
+                }
+            }
+        }
+
         private void ProcessComboBox_DropDownOpened(object? sender, EventArgs e)
         {
             RefreshProcessList((ProcessComboBox.SelectedItem as ProcessInfo)?.ProcessId);
-            UpdateUIState();
         }
 
         private void CaptureModeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -550,21 +573,6 @@ namespace VisionDatasetCapture
             return key.ToString();
         }
 
-        private void PreviewMode_Changed(object sender, RoutedEventArgs e)
-        {
-            if (((RadioButton)sender).IsChecked ?? false)
-            {
-                _previewMode = ((RadioButton)sender).Name switch
-                {
-                    "PreviewModeOriginal" => PreviewMode.Original,
-                    "PreviewModeProcessed" => PreviewMode.Processed,
-                    "PreviewModeSplit" => PreviewMode.Split,
-                    _ => PreviewMode.Processed
-                };
-                UpdatePreview();
-            }
-        }
-
         private void PostProcessingSettings_Changed(object sender, RoutedEventArgs e)
         {
             if (sender is not FrameworkElement) return;
@@ -657,47 +665,32 @@ namespace VisionDatasetCapture
             if (_latestRawFrame == null)
                 return;
 
-            var previewControl = FindName("PreviewImage") as WPFImage;
-            if (previewControl == null)
+            var processedControl = FindName("ProcessedPreviewImage") as WPFImage;
+            var originalControl = FindName("OriginalPreviewImage") as WPFImage;
+            if (processedControl == null || originalControl == null)
                 return;
 
-            Bitmap? displayBitmap = null;
+            Bitmap? processedBitmap = null;
+            Bitmap? originalBitmap = null;
             try
             {
-                displayBitmap = _previewMode switch
-                {
-                    PreviewMode.Original => (Bitmap)_latestRawFrame.Clone(),
-                    PreviewMode.Processed => _latestProcessedFrame != null ? (Bitmap)_latestProcessedFrame.Clone() : null,
-                    PreviewMode.Split => CreateSplitView(_latestRawFrame, _latestProcessedFrame),
-                    _ => (Bitmap)_latestRawFrame.Clone()
-                };
+                // Always show both frames
+                originalBitmap = (Bitmap)_latestRawFrame.Clone();
+                processedBitmap = _latestProcessedFrame != null 
+                    ? (Bitmap)_latestProcessedFrame.Clone() 
+                    : (Bitmap)_latestRawFrame.Clone();
 
-                if (displayBitmap != null)
-                {
-                    var bitmapImage = BitmapToBitmapImage(displayBitmap);
-                    previewControl.Source = bitmapImage;
-                }
+                var processedImage = BitmapToBitmapImage(processedBitmap);
+                var originalImage = BitmapToBitmapImage(originalBitmap);
+
+                processedControl.Source = processedImage;
+                originalControl.Source = originalImage;
             }
             finally
             {
-                displayBitmap?.Dispose();
+                processedBitmap?.Dispose();
+                originalBitmap?.Dispose();
             }
-        }
-
-        private Bitmap CreateSplitView(DrawingBitmap original, DrawingBitmap? processed)
-        {
-            if (processed == null)
-                processed = (DrawingBitmap)original.Clone();
-
-            var width = original.Width * 2;
-            var height = Math.Max(original.Height, processed.Height);
-
-            var splitBitmap = new Bitmap(width, height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
-            using var g = System.Drawing.Graphics.FromImage(splitBitmap);
-            g.DrawImage(original, 0, 0);
-            g.DrawImage(processed, original.Width, Math.Max(0, (original.Height - processed.Height) / 2));
-
-            return splitBitmap;
         }
 
         private BitmapImage BitmapToBitmapImage(DrawingBitmap bitmap)
@@ -719,23 +712,52 @@ namespace VisionDatasetCapture
         private void UpdateUIState()
         {
             var selectedMode = _isCapturing ? _activeCaptureMode : GetSelectedCaptureMode();
+            var hasValidProcess = ProcessComboBox.SelectedItem is ProcessInfo;
 
             ToggleButton.Content = _isCapturing ? "Stop" : "Start";
             ToggleButton.Background = _isCapturing ? WPFBrushes.OrangeRed : WPFBrushes.CornflowerBlue;
+            ToggleButton.IsEnabled = hasValidProcess;
+
             ProcessComboBox.IsEnabled = !_isCapturing;
             DatasetNameTextBox.IsEnabled = !_isCapturing;
             CaptureModeSelector.IsEnabled = !_isCapturing;
             IntervalTextBox.IsEnabled = !_isCapturing && selectedMode == CaptureMode.AutoTimed;
             ManualKeyInput.IsEnabled = !_isCapturing && selectedMode == CaptureMode.ManualKeystroke;
+
+            // Disable all post-processing controls during active capture
+            SetPostProcessingControlsEnabled(!_isCapturing);
+
             StateLabel.Text = _isCapturing
                 ? selectedMode == CaptureMode.AutoTimed ? "Capturing" : "Listening"
-                : "Stopped";
+                : "Preview";
             CaptureModeStatusLabel.Text = GetCaptureModeDisplayName(selectedMode);
 
             if (!_isCapturing)
             {
                 ProcessLabel.Text = (ProcessComboBox.SelectedItem as ProcessInfo)?.DisplayName ?? "-";
                 DatasetLabel.Text = string.IsNullOrWhiteSpace(DatasetNameTextBox.Text) ? "-" : DatasetNameTextBox.Text.Trim();
+            }
+        }
+
+        private void SetPostProcessingControlsEnabled(bool enabled)
+        {
+            var groups = new[]
+            {
+                new[] { "PostProcessingEnabledCheckBox", "GrayscaleCheckBox" },
+                new[] { "BrightnessSlider", "ContrastSlider", "SaturationSlider", "GammaSlider" },
+                new[] { "BrightnessLabel", "ContrastLabel", "SaturationLabel", "GammaLabel" },
+                new[] { "CropEnabledCheckBox", "CropXTextBox", "CropYTextBox", "CropWidthTextBox", "CropHeightTextBox" },
+                new[] { "ResizeEnabledCheckBox", "ResizeWidthTextBox", "ResizeHeightTextBox" }
+            };
+
+            foreach (var group in groups)
+            {
+                foreach (var name in group)
+                {
+                    var control = FindName(name);
+                    if (control is FrameworkElement element)
+                        element.IsEnabled = enabled;
+                }
             }
         }
 

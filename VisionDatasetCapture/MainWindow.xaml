@@ -6,27 +6,24 @@
     <Grid>
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="*"/>
-            <ColumnDefinition Width="350"/>
+            <ColumnDefinition Width="450"/>
         </Grid.ColumnDefinitions>
 
-        <!-- Left side: Preview -->
+        <!-- Left side: Preview (Processed and Original, vertical split) -->
         <Grid Grid.Column="0" Margin="8">
             <Grid.RowDefinitions>
-                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
                 <RowDefinition Height="*"/>
             </Grid.RowDefinitions>
 
-            <!-- Preview Mode Selection -->
-            <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
-                <TextBlock Text="Preview:" VerticalAlignment="Center" Margin="0,0,10,0"/>
-                <RadioButton x:Name="PreviewModeOriginal" Content="Original" GroupName="PreviewMode" VerticalAlignment="Center" Margin="0,0,15,0" Checked="PreviewMode_Changed"/>
-                <RadioButton x:Name="PreviewModeProcessed" Content="Processed" GroupName="PreviewMode" VerticalAlignment="Center" Margin="0,0,15,0" Checked="PreviewMode_Changed"/>
-                <RadioButton x:Name="PreviewModeSplit" Content="Split" GroupName="PreviewMode" VerticalAlignment="Center" Checked="PreviewMode_Changed"/>
-            </StackPanel>
+            <!-- Processed Frame (Top) -->
+            <Border Grid.Row="0" BorderBrush="Gray" BorderThickness="1" Background="Black" Margin="0,0,0,4">
+                <Image x:Name="ProcessedPreviewImage" Stretch="Uniform"/>
+            </Border>
 
-            <!-- Preview Image -->
+            <!-- Original Frame (Bottom) -->
             <Border Grid.Row="1" BorderBrush="Gray" BorderThickness="1" Background="Black">
-                <Image x:Name="PreviewImage" Stretch="Uniform"/>
+                <Image x:Name="OriginalPreviewImage" Stretch="Uniform"/>
             </Border>
         </Grid>
 
@@ -37,7 +34,7 @@
                 <TextBlock Text="CAPTURE SETTINGS" FontWeight="Bold" Margin="0,0,0,8"/>
 
                 <TextBlock Text="Process / window"/>
-                <ComboBox x:Name="ProcessComboBox" Margin="0,2,0,10" DropDownOpened="ProcessComboBox_DropDownOpened"/>
+                <ComboBox x:Name="ProcessComboBox" Margin="0,2,0,10" DropDownOpened="ProcessComboBox_DropDownOpened" SelectionChanged="ProcessComboBox_SelectionChanged"/>
 
                 <TextBlock Text="Dataset / class name"/>
                 <TextBox x:Name="DatasetNameTextBox" Margin="0,2,0,10"/>
