@@ -1,4 +1,6 @@
+using System;
 using System.Globalization;
+using System.IO;
 using System.Drawing;
 using System.Drawing.Imaging;
 using DrawingBitmap = System.Drawing.Bitmap;
@@ -9,6 +11,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using WPFBrushes = System.Windows.Media.Brushes;
+using Microsoft.Win32;
 
 namespace VisionDatasetCapture
 {
@@ -36,6 +39,15 @@ namespace VisionDatasetCapture
 
         private Bitmap? _latestProcessedFrame;
         private PostProcessingSettings _currentPostProcessingSettings = new();
+
+        // Zoom state
+        private double _zoomLevel = 1.0;
+        private const double ZoomIncrement = 0.1;
+        private const double MinZoom = 0.1;
+        private const double MaxZoom = 5.0;
+
+        // Process info
+        private ProcessWindowInfo? _currentProcessInfo;
 
         private ComboBox CaptureModeSelector => (ComboBox)FindName("CaptureModeComboBox");
         private StackPanel IntervalSettingsPanel => (StackPanel)FindName("IntervalPanel");
@@ -69,6 +81,9 @@ namespace VisionDatasetCapture
                 }
                 finally
                 {
+                    // Save settings before closing
+                    TrySaveCurrentSettings();
+
                     // Cleanup resources
                     _latestProcessedFrame?.Dispose();
                     _keyboardHook?.Dispose();
@@ -77,6 +92,11 @@ namespace VisionDatasetCapture
 
                     Close();
                 }
+            }
+            else
+            {
+                // Save settings even if no active capture/preview
+                TrySaveCurrentSettings();
             }
         }
 
@@ -121,6 +141,10 @@ namespace VisionDatasetCapture
             // Load post-processing settings
             _currentPostProcessingSettings = sanitized.PostProcessing.Clone();
             ConfigurePostProcessingUI();
+
+            // Load zoom level
+            _zoomLevel = sanitized.ZoomLevel;
+            UpdateZoomLevel();
         }
 
         private static AppCaptureSettings SanitizeSettings(AppCaptureSettings settings)
@@ -138,7 +162,8 @@ namespace VisionDatasetCapture
                 ManualKey = TryParseManualKey(settings.ManualKey, out var key)
                     ? NormalizeManualKeyText(key)
                     : "K",
-                PostProcessing = settings.PostProcessing ?? new PostProcessingSettings()
+                PostProcessing = settings.PostProcessing ?? new PostProcessingSettings(),
+                ZoomLevel = settings.ZoomLevel >= 0.1 && settings.ZoomLevel <= 5.0 ? settings.ZoomLevel : 1.0
             };
 
             return sanitized;
@@ -200,6 +225,47 @@ namespace VisionDatasetCapture
         {
             UpdateCaptureModeInputs();
             UpdateUIState();
+            TrySaveCurrentSettings();
+        }
+
+        private void PreviewImage_MouseWheel(object sender, MouseWheelEventArgs e)
+        {
+            e.Handled = true;
+
+            // Zoom based on scroll direction
+            double zoomDelta = e.Delta > 0 ? ZoomIncrement : -ZoomIncrement;
+            double newZoom = _zoomLevel + zoomDelta;
+
+            // Clamp zoom to valid range
+            newZoom = Math.Max(MinZoom, Math.Min(MaxZoom, newZoom));
+
+            _zoomLevel = newZoom;
+            UpdateZoomLevel();
+        }
+
+        private void ZoomResetButton_Click(object sender, RoutedEventArgs e)
+        {
+            _zoomLevel = 1.0;
+            UpdateZoomLevel();
+        }
+
+        private void UpdateZoomLevel()
+        {
+            var zoomTransform = FindName("ZoomTransform") as System.Windows.Media.ScaleTransform;
+            if (zoomTransform != null)
+            {
+                zoomTransform.ScaleX = _zoomLevel;
+                zoomTransform.ScaleY = _zoomLevel;
+            }
+
+            var zoomLabel = FindName("ZoomLabel") as TextBlock;
+            if (zoomLabel != null)
+            {
+                zoomLabel.Text = $"{(int)(_zoomLevel * 100)}%";
+            }
+
+            // Auto-save zoom level
+            TrySaveCurrentSettings();
         }
 
         private void UpdateCaptureModeInputs()
@@ -351,6 +417,11 @@ namespace VisionDatasetCapture
             var previewLoop = _previewLoopTask;
             if (previewLoop != null)
                 await previewLoop;
+
+            // Reset zoom when stopping capture
+            _zoomLevel = 1.0;
+            UpdateZoomLevel();
+
             UpdateUIState();
         }
 
@@ -618,7 +689,8 @@ namespace VisionDatasetCapture
                 ManualKey = TryParseManualKey(ManualKeyInput.Text, out var key)
                     ? NormalizeManualKeyText(key)
                     : "K",
-                PostProcessing = _currentPostProcessingSettings.Clone()
+                PostProcessing = _currentPostProcessingSettings.Clone(),
+                ZoomLevel = _zoomLevel
             };
 
             return settings;
@@ -796,6 +868,9 @@ namespace VisionDatasetCapture
                 {
                     var processedImage = BitmapToBitmapImage(processedFrame);
                     processedControl.Source = processedImage;
+
+                    // Update process info
+                    UpdateProcessInfoLabels();
                 }
                 finally
                 {
@@ -806,6 +881,42 @@ namespace VisionDatasetCapture
             {
                 System.Diagnostics.Debug.WriteLine($"Error in UpdatePreview: {ex}");
                 processedFrame?.Dispose();
+            }
+        }
+
+        private void UpdateProcessInfoLabels()
+        {
+            if (_activeHandle == IntPtr.Zero)
+                return;
+
+            _currentProcessInfo = ProcessWindowInfoProvider.GetWindowInfo(_activeHandle);
+            if (_currentProcessInfo == null)
+                return;
+
+            try
+            {
+                Dispatcher.BeginInvoke(() =>
+                {
+                    var pidLabel = FindName("ProcessIdLabel") as TextBlock;
+                    if (pidLabel != null)
+                        pidLabel.Text = _currentProcessInfo.ProcessId.ToString();
+
+                    var windowDimLabel = FindName("WindowDimensionsLabel") as TextBlock;
+                    if (windowDimLabel != null)
+                        windowDimLabel.Text = $"{_currentProcessInfo.WindowWidth}x{_currentProcessInfo.WindowHeight}";
+
+                    var windowPosLabel = FindName("WindowPositionLabel") as TextBlock;
+                    if (windowPosLabel != null)
+                        windowPosLabel.Text = $"({_currentProcessInfo.WindowX}, {_currentProcessInfo.WindowY})";
+
+                    var clientDimLabel = FindName("ClientDimensionsLabel") as TextBlock;
+                    if (clientDimLabel != null)
+                        clientDimLabel.Text = $"{_currentProcessInfo.ClientWidth}x{_currentProcessInfo.ClientHeight}";
+                });
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error updating process info labels: {ex}");
             }
         }
 
@@ -906,6 +1017,88 @@ namespace VisionDatasetCapture
             _previewCts?.Cancel();
             _captureCts?.Cancel();
             base.OnClosed(e);
+        }
+
+        private void ExportSettingsButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var dialog = new SaveFileDialog
+                {
+                    Filter = "JSON Settings (*.json)|*.json|All Files (*.*)|*.*",
+                    DefaultExt = ".json",
+                    FileName = $"capture-settings-{DateTime.Now:yyyyMMdd_HHmmss}.json"
+                };
+
+                if (dialog.ShowDialog() == true)
+                {
+                    var settings = BuildCurrentSettings();
+                    AppCaptureSettingsStore.ExportToFile(settings, dialog.FileName);
+                    ShowSettingsMessage($"Settings exported to: {Path.GetFileName(dialog.FileName)}", true);
+                }
+            }
+            catch (Exception ex)
+            {
+                ShowSettingsMessage($"Export failed: {ex.Message}", false);
+            }
+        }
+
+        private void ImportSettingsButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var dialog = new OpenFileDialog
+                {
+                    Filter = "JSON Settings (*.json)|*.json|All Files (*.*)|*.*",
+                    DefaultExt = ".json"
+                };
+
+                if (dialog.ShowDialog() == true)
+                {
+                    var importedSettings = AppCaptureSettingsStore.ImportFromFile(dialog.FileName);
+                    ApplySettings(importedSettings);
+                    TrySaveCurrentSettings();
+                    ShowSettingsMessage("Settings imported successfully", true);
+                }
+            }
+            catch (Exception ex)
+            {
+                ShowSettingsMessage($"Import failed: {ex.Message}", false);
+            }
+        }
+
+        private void ResetSettingsButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var result = System.Windows.MessageBox.Show(
+                    "Reset all settings to defaults? This cannot be undone.",
+                    "Reset Settings",
+                    System.Windows.MessageBoxButton.YesNo,
+                    System.Windows.MessageBoxImage.Warning);
+
+                if (result == System.Windows.MessageBoxResult.Yes)
+                {
+                    var defaultSettings = new AppCaptureSettings();
+                    ApplySettings(defaultSettings);
+                    TrySaveCurrentSettings();
+                    ShowSettingsMessage("Settings reset to defaults", true);
+                }
+            }
+            catch (Exception ex)
+            {
+                ShowSettingsMessage($"Reset failed: {ex.Message}", false);
+            }
+        }
+
+        private void ShowSettingsMessage(string message, bool isSuccess)
+        {
+            var msgBlock = FindName("SettingsMessageBlock") as TextBlock;
+            if (msgBlock != null)
+            {
+                msgBlock.Text = message;
+                msgBlock.Foreground = isSuccess ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Colors.DarkGreen) : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Colors.Firebrick);
+            }
         }
 
         private sealed record CaptureModeOption(CaptureMode Mode, string DisplayName);

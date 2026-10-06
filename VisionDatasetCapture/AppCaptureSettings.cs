@@ -75,12 +75,23 @@ namespace VisionDatasetCapture
 
     public class AppCaptureSettings
     {
+        /// <summary>
+        /// Schema version for forward/backward compatibility during import/export.
+        /// </summary>
+        [JsonPropertyName("settingsVersion")]
+        public int SettingsVersion { get; set; } = 1;
+
         public int? SelectedProcessId { get; set; }
         public string DatasetName { get; set; } = "";
         public CaptureMode CaptureMode { get; set; } = CaptureMode.AutoTimed;
         public int IntervalSeconds { get; set; } = 1;
         public string ManualKey { get; set; } = "K";
         public PostProcessingSettings PostProcessing { get; set; } = new();
+
+        /// <summary>
+        /// Preview zoom level (1.0 = 100% / no zoom).
+        /// </summary>
+        public double ZoomLevel { get; set; } = 1.0;
     }
 
     public static class AppCaptureSettingsStore
@@ -121,12 +132,72 @@ namespace VisionDatasetCapture
             File.WriteAllText(SettingsFilePath, json);
         }
 
+        /// <summary>
+        /// Exports current settings to a specified JSON file.
+        /// </summary>
+        public static string ExportToJson(AppCaptureSettings settings)
+        {
+            return JsonSerializer.Serialize(settings, SerializerOptions);
+        }
+
+        /// <summary>
+        /// Imports settings from JSON string, tolerating missing/unknown fields.
+        /// </summary>
+        public static AppCaptureSettings ImportFromJson(string json)
+        {
+            try
+            {
+                var settings = JsonSerializer.Deserialize<AppCaptureSettings>(json, SerializerOptions);
+                return EnsureDefaults(settings ?? new AppCaptureSettings());
+            }
+            catch
+            {
+                // If import fails, return defaults and let caller handle the error
+                return new AppCaptureSettings();
+            }
+        }
+
+        /// <summary>
+        /// Exports settings to a file at the specified path.
+        /// </summary>
+        public static void ExportToFile(AppCaptureSettings settings, string filePath)
+        {
+            var json = ExportToJson(settings);
+            File.WriteAllText(filePath, json);
+        }
+
+        /// <summary>
+        /// Imports settings from a file at the specified path.
+        /// </summary>
+        public static AppCaptureSettings ImportFromFile(string filePath)
+        {
+            if (!File.Exists(filePath))
+                return new AppCaptureSettings();
+
+            try
+            {
+                var json = File.ReadAllText(filePath);
+                return ImportFromJson(json);
+            }
+            catch
+            {
+                return new AppCaptureSettings();
+            }
+        }
+
         private static AppCaptureSettings EnsureDefaults(AppCaptureSettings settings)
         {
             // Ensure PostProcessingSettings is not null
             settings.PostProcessing ??= new PostProcessingSettings();
             settings.PostProcessing.Crop ??= new PostProcessingCropSettings();
             settings.PostProcessing.Resize ??= new PostProcessingResizeSettings();
+
+            // Ensure zoom level is valid
+            if (settings.ZoomLevel < 0.1)
+                settings.ZoomLevel = 1.0;
+            if (settings.ZoomLevel > 5.0)
+                settings.ZoomLevel = 1.0;
+
             return settings;
         }
     }
