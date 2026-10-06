@@ -1,8 +1,13 @@
 using System.Globalization;
+using System.Drawing;
+using DrawingBitmap = System.Drawing.Bitmap;
 using System.Windows;
 using System.Windows.Controls;
+using WPFImage = System.Windows.Controls.Image;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using WPFBrushes = System.Windows.Media.Brushes;
 
 namespace VisionDatasetCapture
 {
@@ -17,6 +22,7 @@ namespace VisionDatasetCapture
 
         private CancellationTokenSource? _cts;
         private Task? _loopTask;
+        private Task? _previewLoopTask;
         private GlobalKeyboardHook? _keyboardHook;
         private bool _isCapturing;
         private CaptureMode _activeCaptureMode = CaptureMode.AutoTimed;
@@ -25,18 +31,29 @@ namespace VisionDatasetCapture
         private int _nextImageNumber;
         private int _captureCount;
 
+        private Bitmap? _latestRawFrame;
+        private Bitmap? _latestProcessedFrame;
+        private PostProcessingSettings _currentPostProcessingSettings = new();
+        private PreviewMode _previewMode = PreviewMode.Processed;
+
         private ComboBox CaptureModeSelector => (ComboBox)FindName("CaptureModeComboBox");
         private StackPanel IntervalSettingsPanel => (StackPanel)FindName("IntervalPanel");
         private StackPanel ManualKeySettingsPanel => (StackPanel)FindName("ManualKeyPanel");
         private TextBox ManualKeyInput => (TextBox)FindName("ManualKeyTextBox");
         private TextBlock CaptureModeStatusLabel => (TextBlock)FindName("ModeLabel");
 
+        private WPFImage PreviewImageControl => (WPFImage)FindName("PreviewImage");
+
+        private enum PreviewMode { Original, Processed, Split }
+
         public MainWindow()
         {
             InitializeComponent();
             ConfigureCaptureModes();
+            ConfigurePostProcessingUI();
             ApplySettings(AppCaptureSettingsStore.LoadOrDefault());
             UpdateUIState();
+            InitializePreviewMode();
         }
 
         private void ConfigureCaptureModes()
@@ -45,6 +62,32 @@ namespace VisionDatasetCapture
             CaptureModeSelector.DisplayMemberPath = nameof(CaptureModeOption.DisplayName);
             CaptureModeSelector.SelectedValuePath = nameof(CaptureModeOption.Mode);
             CaptureModeSelector.SelectedValue = CaptureMode.AutoTimed;
+        }
+
+        private void ConfigurePostProcessingUI()
+        {
+            // Set default values
+            var postProc = _currentPostProcessingSettings;
+            ((CheckBox)FindName("PostProcessingEnabledCheckBox")).IsChecked = postProc.Enabled;
+            ((CheckBox)FindName("GrayscaleCheckBox")).IsChecked = postProc.Grayscale;
+            ((Slider)FindName("BrightnessSlider")).Value = postProc.Brightness;
+            ((Slider)FindName("ContrastSlider")).Value = postProc.Contrast;
+            ((Slider)FindName("SaturationSlider")).Value = postProc.Saturation;
+            ((Slider)FindName("GammaSlider")).Value = postProc.Gamma;
+            ((CheckBox)FindName("CropEnabledCheckBox")).IsChecked = postProc.Crop.Enabled;
+            ((TextBox)FindName("CropXTextBox")).Text = postProc.Crop.X.ToString();
+            ((TextBox)FindName("CropYTextBox")).Text = postProc.Crop.Y.ToString();
+            ((TextBox)FindName("CropWidthTextBox")).Text = postProc.Crop.Width.ToString();
+            ((TextBox)FindName("CropHeightTextBox")).Text = postProc.Crop.Height.ToString();
+            ((CheckBox)FindName("ResizeEnabledCheckBox")).IsChecked = postProc.Resize.Enabled;
+            ((TextBox)FindName("ResizeWidthTextBox")).Text = postProc.Resize.Width.ToString();
+            ((TextBox)FindName("ResizeHeightTextBox")).Text = postProc.Resize.Height.ToString();
+        }
+
+        private void InitializePreviewMode()
+        {
+            ((RadioButton)FindName("PreviewModeProcessed")).IsChecked = true;
+            _previewMode = PreviewMode.Processed;
         }
 
         private void ApplySettings(AppCaptureSettings settings)
@@ -56,6 +99,10 @@ namespace VisionDatasetCapture
             CaptureModeSelector.SelectedValue = sanitized.CaptureMode;
             RefreshProcessList(sanitized.SelectedProcessId);
             UpdateCaptureModeInputs();
+
+            // Load post-processing settings
+            _currentPostProcessingSettings = sanitized.PostProcessing.Clone();
+            ConfigurePostProcessingUI();
         }
 
         private static AppCaptureSettings SanitizeSettings(AppCaptureSettings settings)
@@ -72,7 +119,8 @@ namespace VisionDatasetCapture
                 IntervalSeconds = settings.IntervalSeconds > 0 ? settings.IntervalSeconds : 1,
                 ManualKey = TryParseManualKey(settings.ManualKey, out var key)
                     ? NormalizeManualKeyText(key)
-                    : "K"
+                    : "K",
+                PostProcessing = settings.PostProcessing ?? new PostProcessingSettings()
             };
 
             return sanitized;
@@ -219,6 +267,9 @@ namespace VisionDatasetCapture
             _loopTask = options.Mode == CaptureMode.AutoTimed
                 ? Task.Run(() => CaptureLoopAsync(options.IntervalSeconds, cts))
                 : Task.Run(() => WaitForCancellationAsync(cts.Token));
+
+            // Start preview loop (continuous preview capture at ~30fps)
+            _previewLoopTask = Task.Run(() => PreviewLoopAsync(cts));
         }
 
         private async Task StopCaptureAsync()
@@ -231,8 +282,11 @@ namespace VisionDatasetCapture
 
             ToggleButton.IsEnabled = false;
             var loop = _loopTask;
+            var previewLoop = _previewLoopTask;
             if (loop != null)
                 await loop;
+            if (previewLoop != null)
+                await previewLoop;
             ToggleButton.IsEnabled = true;
             UpdateUIState();
         }
@@ -267,6 +321,56 @@ namespace VisionDatasetCapture
             }
         }
 
+        private async Task PreviewLoopAsync(CancellationTokenSource cts)
+        {
+            var token = cts.Token;
+
+            try
+            {
+                using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(33)); // ~30fps
+                do
+                {
+                    bool lockTaken = false;
+                    try
+                    {
+                        lockTaken = await _captureLock.WaitAsync(0, token);
+                        if (!lockTaken)
+                            continue;
+
+                        using var bitmap = ScreenshotCapture.CaptureWindow(_activeHandle);
+                        if (bitmap != null)
+                        {
+                            _latestRawFrame?.Dispose();
+                            _latestRawFrame = (DrawingBitmap)bitmap.Clone();
+
+                            var settingsSnapshot = _currentPostProcessingSettings.Clone();
+                            using var processed = ImageProcessor.Process(bitmap, settingsSnapshot);
+
+                            _latestProcessedFrame?.Dispose();
+                            _latestProcessedFrame = (DrawingBitmap)processed.Clone();
+
+                            _ = Dispatcher.BeginInvoke(() =>
+                            {
+                                if (ReferenceEquals(_cts, cts))
+                                {
+                                    UpdatePreview();
+                                }
+                            });
+                        }
+                    }
+                    finally
+                    {
+                        if (lockTaken)
+                            _captureLock.Release();
+                    }
+                }
+                while (await timer.WaitForNextTickAsync(token));
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+
         private async Task<bool> CaptureFrameAsync(CancellationTokenSource cts, bool skipIfBusy)
         {
             var token = cts.Token;
@@ -286,24 +390,42 @@ namespace VisionDatasetCapture
                     lockTaken = true;
                 }
 
-                using var bitmap = ScreenshotCapture.CaptureWindow(_activeHandle);
-                if (bitmap == null)
+                using var rawBitmap = ScreenshotCapture.CaptureWindow(_activeHandle);
+                if (rawBitmap == null)
                 {
                     await HandleCaptureFailureAsync(cts, "Failed to capture screenshot (window closed, minimized or invalid).");
                     return false;
                 }
 
                 token.ThrowIfCancellationRequested();
-                var filename = DatasetWriter.SaveScreenshot(_activeDataset, _nextImageNumber++, bitmap);
+
+                // Update raw frame for preview
+                _latestRawFrame?.Dispose();
+                _latestRawFrame = (Bitmap)rawBitmap.Clone();
+
+                // Process the frame using current settings
+                var settingsSnapshot = _currentPostProcessingSettings.Clone();
+                using var processedBitmap = ImageProcessor.Process(rawBitmap, settingsSnapshot);
+
+                token.ThrowIfCancellationRequested();
+
+                // Update processed frame for preview
+                _latestProcessedFrame?.Dispose();
+                _latestProcessedFrame = (Bitmap)processedBitmap.Clone();
+
+                // Save the processed bitmap to disk
+                var filename = DatasetWriter.SaveScreenshot(_activeDataset, _nextImageNumber++, processedBitmap);
                 _captureCount++;
                 var saved = _captureCount;
 
+                // Update UI
                 _ = Dispatcher.BeginInvoke(() =>
                 {
                     if (ReferenceEquals(_cts, cts))
                     {
                         CapturedLabel.Text = saved.ToString(CultureInfo.InvariantCulture);
                         LastFileLabel.Text = filename;
+                        UpdatePreview(); // Update preview with new frame
                     }
                 });
 
@@ -379,7 +501,8 @@ namespace VisionDatasetCapture
                     : 1,
                 ManualKey = TryParseManualKey(ManualKeyInput.Text, out var key)
                     ? NormalizeManualKeyText(key)
-                    : "K"
+                    : "K",
+                PostProcessing = _currentPostProcessingSettings.Clone()
             };
 
             return settings;
@@ -427,12 +550,144 @@ namespace VisionDatasetCapture
             return key.ToString();
         }
 
+        private void PreviewMode_Changed(object sender, RoutedEventArgs e)
+        {
+            if (((RadioButton)sender).IsChecked ?? false)
+            {
+                _previewMode = ((RadioButton)sender).Name switch
+                {
+                    "PreviewModeOriginal" => PreviewMode.Original,
+                    "PreviewModeProcessed" => PreviewMode.Processed,
+                    "PreviewModeSplit" => PreviewMode.Split,
+                    _ => PreviewMode.Processed
+                };
+                UpdatePreview();
+            }
+        }
+
+        private void PostProcessingSettings_Changed(object sender, RoutedEventArgs e)
+        {
+            if (sender is not FrameworkElement) return;
+            UpdatePostProcessingSettings();
+        }
+
+        private void PostProcessingSettings_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            UpdatePostProcessingSettings();
+        }
+
+        private void CropSettings_Changed(object sender, TextChangedEventArgs e)
+        {
+            UpdatePostProcessingSettings();
+        }
+
+        private void ResizeSettings_Changed(object sender, TextChangedEventArgs e)
+        {
+            UpdatePostProcessingSettings();
+        }
+
+        private void UpdatePostProcessingSettings()
+        {
+            _currentPostProcessingSettings = new PostProcessingSettings
+            {
+                Enabled = ((CheckBox)FindName("PostProcessingEnabledCheckBox")).IsChecked ?? true,
+                Grayscale = ((CheckBox)FindName("GrayscaleCheckBox")).IsChecked ?? false,
+                Brightness = (float)((Slider)FindName("BrightnessSlider")).Value,
+                Contrast = (float)((Slider)FindName("ContrastSlider")).Value,
+                Saturation = (float)((Slider)FindName("SaturationSlider")).Value,
+                Gamma = (float)((Slider)FindName("GammaSlider")).Value,
+                Crop = new PostProcessingCropSettings
+                {
+                    Enabled = ((CheckBox)FindName("CropEnabledCheckBox")).IsChecked ?? false,
+                    X = int.TryParse(((TextBox)FindName("CropXTextBox")).Text, out var x) ? x : 0,
+                    Y = int.TryParse(((TextBox)FindName("CropYTextBox")).Text, out var y) ? y : 0,
+                    Width = int.TryParse(((TextBox)FindName("CropWidthTextBox")).Text, out var w) ? w : 0,
+                    Height = int.TryParse(((TextBox)FindName("CropHeightTextBox")).Text, out var h) ? h : 0
+                },
+                Resize = new PostProcessingResizeSettings
+                {
+                    Enabled = ((CheckBox)FindName("ResizeEnabledCheckBox")).IsChecked ?? false,
+                    Width = int.TryParse(((TextBox)FindName("ResizeWidthTextBox")).Text, out var rw) ? rw : 800,
+                    Height = int.TryParse(((TextBox)FindName("ResizeHeightTextBox")).Text, out var rh) ? rh : 600
+                }
+            };
+
+            // Update brightness label
+            ((TextBlock)FindName("BrightnessLabel")).Text = _currentPostProcessingSettings.Brightness.ToString("F1");
+            ((TextBlock)FindName("ContrastLabel")).Text = _currentPostProcessingSettings.Contrast.ToString("F1");
+            ((TextBlock)FindName("SaturationLabel")).Text = _currentPostProcessingSettings.Saturation.ToString("F1");
+            ((TextBlock)FindName("GammaLabel")).Text = _currentPostProcessingSettings.Gamma.ToString("F1");
+
+            UpdatePreview();
+            TrySaveCurrentSettings();
+        }
+
+        private void UpdatePreview()
+        {
+            if (_latestRawFrame == null)
+                return;
+
+            Bitmap? displayBitmap = null;
+            try
+            {
+                displayBitmap = _previewMode switch
+                {
+                    PreviewMode.Original => (Bitmap)_latestRawFrame.Clone(),
+                    PreviewMode.Processed => _latestProcessedFrame != null ? (Bitmap)_latestProcessedFrame.Clone() : null,
+                    PreviewMode.Split => CreateSplitView(_latestRawFrame, _latestProcessedFrame),
+                    _ => (Bitmap)_latestRawFrame.Clone()
+                };
+
+                if (displayBitmap != null)
+                {
+                    var bitmapImage = BitmapToBitmapImage(displayBitmap);
+                    PreviewImageControl.Source = bitmapImage;
+                }
+            }
+            finally
+            {
+                displayBitmap?.Dispose();
+            }
+        }
+
+        private Bitmap CreateSplitView(DrawingBitmap original, DrawingBitmap? processed)
+        {
+            if (processed == null)
+                processed = (DrawingBitmap)original.Clone();
+
+            var width = original.Width * 2;
+            var height = Math.Max(original.Height, processed.Height);
+
+            var splitBitmap = new Bitmap(width, height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            using var g = System.Drawing.Graphics.FromImage(splitBitmap);
+            g.DrawImage(original, 0, 0);
+            g.DrawImage(processed, original.Width, Math.Max(0, (original.Height - processed.Height) / 2));
+
+            return splitBitmap;
+        }
+
+        private BitmapImage BitmapToBitmapImage(DrawingBitmap bitmap)
+        {
+            using var memory = new System.IO.MemoryStream();
+            bitmap.Save(memory, System.Drawing.Imaging.ImageFormat.Bmp);
+            memory.Position = 0;
+
+            var bitmapImage = new BitmapImage();
+            bitmapImage.BeginInit();
+            bitmapImage.StreamSource = memory;
+            bitmapImage.CacheOption = BitmapCacheOption.OnLoad;
+            bitmapImage.EndInit();
+            bitmapImage.Freeze();
+
+            return bitmapImage;
+        }
+
         private void UpdateUIState()
         {
             var selectedMode = _isCapturing ? _activeCaptureMode : GetSelectedCaptureMode();
 
             ToggleButton.Content = _isCapturing ? "Stop" : "Start";
-            ToggleButton.Background = _isCapturing ? Brushes.OrangeRed : Brushes.CornflowerBlue;
+            ToggleButton.Background = _isCapturing ? WPFBrushes.OrangeRed : WPFBrushes.CornflowerBlue;
             ProcessComboBox.IsEnabled = !_isCapturing;
             DatasetNameTextBox.IsEnabled = !_isCapturing;
             CaptureModeSelector.IsEnabled = !_isCapturing;

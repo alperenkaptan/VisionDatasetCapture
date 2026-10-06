@@ -1,3 +1,4 @@
 <Solution>
   <Project Path="F:/src/repos/VisionDatasetCapture/VisionDatasetCapture/VisionDatasetCapture.csproj" />
+  <Project Path="VisionDatasetCapture.Tests/VisionDatasetCapture.Tests.csproj" />
 </Solution>
