@@ -3,12 +3,19 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Vision Dataset Capture" Width="1000" Height="900"
         WindowStartupLocation="CenterScreen" ResizeMode="CanResizeWithGrip"
+        Topmost="True"
         Closing="Window_Closing">
     <Grid>
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="*"/>
             <ColumnDefinition Width="450"/>
         </Grid.ColumnDefinitions>
+
+        <Popup x:Name="FloatingMagnifierPopup" AllowsTransparency="True" Placement="Absolute" StaysOpen="True" IsHitTestVisible="False">
+            <Border Width="96" Height="96" BorderBrush="Gold" BorderThickness="2" CornerRadius="4" Background="Black">
+                <Image x:Name="FloatingMagnifierImage" Stretch="Fill"/>
+            </Border>
+        </Popup>
 
         <!-- Left side: Preview (Processed only, single image) -->
         <Grid Grid.Column="0" Margin="8">
@@ -18,12 +25,17 @@
             </Grid.RowDefinitions>
 
             <!-- Processed Frame (Full) with Zoom -->
-            <Border Grid.Row="0" BorderBrush="Gray" BorderThickness="1" Background="Black" x:Name="PreviewBorder" MouseWheel="PreviewImage_MouseWheel">
-                <Image x:Name="ProcessedPreviewImage" Stretch="Uniform" RenderTransformOrigin="0.5,0.5">
-                    <Image.RenderTransform>
-                        <ScaleTransform x:Name="ZoomTransform" ScaleX="1.0" ScaleY="1.0"/>
-                    </Image.RenderTransform>
-                </Image>
+            <Border Grid.Row="0" BorderBrush="Gray" BorderThickness="1" Background="Black" x:Name="PreviewBorder" ClipToBounds="True" MouseWheel="PreviewImage_MouseWheel" MouseMove="PreviewBorder_MouseMove" MouseLeftButtonDown="PreviewBorder_MouseLeftButtonDown" MouseDown="PreviewBorder_MouseDown" MouseUp="PreviewBorder_MouseUp">
+                <Grid ClipToBounds="True">
+                    <Image x:Name="ProcessedPreviewImage" Stretch="Uniform" RenderTransformOrigin="0.5,0.5" ClipToBounds="True">
+                        <Image.RenderTransform>
+                            <TransformGroup>
+                                <ScaleTransform x:Name="ZoomTransform" ScaleX="1.0" ScaleY="1.0"/>
+                                <TranslateTransform x:Name="PanTransform" X="0" Y="0"/>
+                            </TransformGroup>
+                        </Image.RenderTransform>
+                    </Image>
+                </Grid>
             </Border>
 
             <!-- Zoom Info Bar -->
@@ -184,6 +196,45 @@
                     <TextBlock Text="Resize Height"/>
                     <TextBox x:Name="ResizeHeightTextBox" Text="600" Margin="0,2,0,10" TextChanged="ResizeSettings_Changed"/>
                 </StackPanel>
+
+                <!-- Color Settings -->
+                <Separator Margin="0,16,0,8"/>
+                <TextBlock Text="COLOR SETTINGS" FontWeight="Bold" Margin="0,0,0,8"/>
+
+                <Button x:Name="EyedropperButton" Content="Start Eyedropper" Height="32" Click="EyedropperButton_Click" Background="SlateBlue" Foreground="White" FontWeight="Bold" Margin="0,0,0,10"/>
+
+                <Grid Margin="0,0,0,10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="80"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Border Grid.Column="0" Width="72" Height="72" BorderBrush="Gray" BorderThickness="1" Background="Black">
+                        <Image x:Name="ColorMagnifierImage" Stretch="Fill"/>
+                    </Border>
+                    <Border Grid.Column="1" Margin="10,0,0,0" BorderBrush="Gray" BorderThickness="1" Background="White" Height="72">
+                        <Rectangle x:Name="SelectedColorSwatch" Fill="Transparent"/>
+                    </Border>
+                </Grid>
+
+                <Grid Margin="0,0,0,10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="70"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/>
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Row="0" Text="HEX:"/>
+                    <TextBlock Grid.Row="0" Grid.Column="1" x:Name="ColorHexLabel" Text="-"/>
+                    <TextBlock Grid.Row="1" Text="RGBA:"/>
+                    <TextBlock Grid.Row="1" Grid.Column="1" x:Name="ColorRgbaLabel" Text="-"/>
+                    <TextBlock Grid.Row="2" Text="HSV:"/>
+                    <TextBlock Grid.Row="2" Grid.Column="1" x:Name="ColorHsvLabel" Text="-"/>
+                    <TextBlock Grid.Row="3" Text="Coord:"/>
+                    <TextBlock Grid.Row="3" Grid.Column="1" x:Name="ColorCoordLabel" Text="-"/>
+                    <TextBlock Grid.Row="4" Grid.Column="1" x:Name="EyedropperStateLabel" Text="Inactive" Foreground="Gray"/>
+                </Grid>
 
                 <!-- Settings Management -->
                 <Separator Margin="0,16,0,8"/>

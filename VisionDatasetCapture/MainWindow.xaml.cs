@@ -45,9 +45,23 @@ namespace VisionDatasetCapture
         private const double ZoomIncrement = 0.1;
         private const double MinZoom = 0.1;
         private const double MaxZoom = 5.0;
+        private bool _isPanning;
+        private System.Windows.Point _lastPanPoint;
+        private double _panX;
+        private double _panY;
 
         // Process info
         private ProcessWindowInfo? _currentProcessInfo;
+
+        // Eyedropper state
+        private bool _isEyedropperActive;
+        private bool _wasLeftMouseDown;
+        private CancellationTokenSource? _eyedropperCts;
+        private Task? _eyedropperLoopTask;
+        private System.Drawing.Color? _selectedColor;
+        private System.Windows.Point? _lastSamplePoint;
+        private const int MagnifierSampleRadius = 5;
+        private const int MagnifierScale = 10;
 
         private ComboBox CaptureModeSelector => (ComboBox)FindName("CaptureModeComboBox");
         private StackPanel IntervalSettingsPanel => (StackPanel)FindName("IntervalPanel");
@@ -62,6 +76,7 @@ namespace VisionDatasetCapture
             ConfigurePostProcessingUI();
             ApplySettings(AppCaptureSettingsStore.LoadOrDefault());
             UpdateUIState();
+            PreviewKeyDown += MainWindow_PreviewKeyDown;
         }
 
         private async void Window_Closing(object sender, System.ComponentModel.CancelEventArgs e)
@@ -240,13 +255,114 @@ namespace VisionDatasetCapture
             newZoom = Math.Max(MinZoom, Math.Min(MaxZoom, newZoom));
 
             _zoomLevel = newZoom;
+            if (_zoomLevel <= 1.0)
+            {
+                _panX = 0;
+                _panY = 0;
+            }
+
             UpdateZoomLevel();
         }
 
         private void ZoomResetButton_Click(object sender, RoutedEventArgs e)
         {
             _zoomLevel = 1.0;
+            _panX = 0;
+            _panY = 0;
             UpdateZoomLevel();
+        }
+
+        private void EyedropperButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (!_isCapturing)
+            {
+                SetEyedropperUiState("Start capture first", WPFBrushes.Gray);
+                return;
+            }
+
+            if (_isEyedropperActive)
+            {
+                CancelEyedropperMode();
+                return;
+            }
+
+            StartExternalEyedropperMode();
+        }
+
+        private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Escape && _isEyedropperActive)
+            {
+                CancelEyedropperMode();
+                e.Handled = true;
+            }
+        }
+
+        private void PreviewBorder_MouseDown(object sender, MouseButtonEventArgs e)
+        {
+            if (e.ChangedButton == MouseButton.Middle && _isCapturing && _zoomLevel > 1.0)
+            {
+                _isPanning = true;
+                _lastPanPoint = e.GetPosition(PreviewBorder);
+                PreviewBorder.CaptureMouse();
+                e.Handled = true;
+            }
+        }
+
+        private void PreviewBorder_MouseUp(object sender, MouseButtonEventArgs e)
+        {
+            if (e.ChangedButton == MouseButton.Middle && _isPanning)
+            {
+                _isPanning = false;
+                PreviewBorder.ReleaseMouseCapture();
+                e.Handled = true;
+            }
+        }
+
+        private void StartExternalEyedropperMode()
+        {
+            _isEyedropperActive = true;
+            _wasLeftMouseDown = false;
+
+            if (Win32Interop.GetWindowRect(_activeHandle, out var rect))
+            {
+                var centerX = (rect.Left + rect.Right) / 2;
+                var centerY = (rect.Top + rect.Bottom) / 2;
+                Win32Interop.SetCursorPos(centerX, centerY);
+            }
+
+            // Keep app behind target process while sampling from target surface.
+            Topmost = false;
+
+            Focus();
+            SetEyedropperUiState("Sampling target process... Left click to select, Esc to cancel", WPFBrushes.DodgerBlue);
+
+            _eyedropperCts?.Cancel();
+            _eyedropperCts?.Dispose();
+            _eyedropperCts = new CancellationTokenSource();
+            var localCts = _eyedropperCts;
+            _eyedropperLoopTask = Task.Run(() => ExternalEyedropperLoopAsync(localCts.Token));
+        }
+
+        private void CancelEyedropperMode()
+        {
+            _isEyedropperActive = false;
+
+            var cts = _eyedropperCts;
+            _eyedropperCts = null;
+            cts?.Cancel();
+            cts?.Dispose();
+
+            _eyedropperLoopTask = null;
+
+            var popup = FindName("FloatingMagnifierPopup") as System.Windows.Controls.Primitives.Popup;
+            if (popup != null)
+                popup.IsOpen = false;
+
+            // Restore app topmost behavior after eyedropper completes/cancels.
+            Topmost = true;
+
+            SetEyedropperUiState("Cancelled", WPFBrushes.Gray);
         }
 
         private void UpdateZoomLevel()
@@ -256,6 +372,13 @@ namespace VisionDatasetCapture
             {
                 zoomTransform.ScaleX = _zoomLevel;
                 zoomTransform.ScaleY = _zoomLevel;
+            }
+
+            var panTransform = FindName("PanTransform") as System.Windows.Media.TranslateTransform;
+            if (panTransform != null)
+            {
+                panTransform.X = _zoomLevel > 1.0 ? _panX : 0;
+                panTransform.Y = _zoomLevel > 1.0 ? _panY : 0;
             }
 
             var zoomLabel = FindName("ZoomLabel") as TextBlock;
@@ -418,8 +541,13 @@ namespace VisionDatasetCapture
             if (previewLoop != null)
                 await previewLoop;
 
+            CancelEyedropperMode();
+
             // Reset zoom when stopping capture
             _zoomLevel = 1.0;
+            _panX = 0;
+            _panY = 0;
+            _isPanning = false;
             UpdateZoomLevel();
 
             UpdateUIState();
@@ -937,6 +1065,265 @@ namespace VisionDatasetCapture
             return bitmapImage;
         }
 
+        private void SetEyedropperUiState(string stateText, System.Windows.Media.Brush stateBrush)
+        {
+            var stateLabel = FindName("EyedropperStateLabel") as TextBlock;
+            if (stateLabel != null)
+            {
+                stateLabel.Text = stateText;
+                stateLabel.Foreground = stateBrush;
+            }
+
+            var eyedropperButton = FindName("EyedropperButton") as Button;
+            if (eyedropperButton != null)
+            {
+                eyedropperButton.Content = _isEyedropperActive ? "Stop Eyedropper" : "Start Eyedropper";
+                eyedropperButton.Background = _isEyedropperActive ? WPFBrushes.OrangeRed : WPFBrushes.SlateBlue;
+            }
+        }
+
+        private static (double H, double S, double V) ToHsv(System.Drawing.Color color)
+        {
+            var h = color.GetHue();
+            var s = color.GetSaturation() * 100.0;
+            var v = color.GetBrightness() * 100.0;
+            return (h, s, v);
+        }
+
+        private bool TryMapPreviewPointToBitmapPoint(System.Windows.Point previewPoint, out int x, out int y)
+        {
+            x = 0;
+            y = 0;
+
+            var image = FindName("ProcessedPreviewImage") as WPFImage;
+            if (image?.Source is not BitmapSource bitmapSource)
+                return false;
+
+            var controlWidth = image.ActualWidth;
+            var controlHeight = image.ActualHeight;
+            if (controlWidth <= 0 || controlHeight <= 0)
+                return false;
+
+            var bmpWidth = bitmapSource.PixelWidth;
+            var bmpHeight = bitmapSource.PixelHeight;
+            if (bmpWidth <= 0 || bmpHeight <= 0)
+                return false;
+
+            var scale = Math.Min(controlWidth / bmpWidth, controlHeight / bmpHeight);
+            var renderedWidth = bmpWidth * scale;
+            var renderedHeight = bmpHeight * scale;
+            var offsetX = (controlWidth - renderedWidth) / 2.0;
+            var offsetY = (controlHeight - renderedHeight) / 2.0;
+
+            var px = previewPoint.X - offsetX;
+            var py = previewPoint.Y - offsetY;
+            if (px < 0 || py < 0 || px >= renderedWidth || py >= renderedHeight)
+                return false;
+
+            x = Math.Clamp((int)(px / scale), 0, bmpWidth - 1);
+            y = Math.Clamp((int)(py / scale), 0, bmpHeight - 1);
+            return true;
+        }
+
+        private static Bitmap BuildMagnifierBitmap(Bitmap source, int centerX, int centerY)
+        {
+            var sampleSize = (MagnifierSampleRadius * 2) + 1;
+            var magnifierSize = sampleSize * MagnifierScale;
+            var output = new Bitmap(magnifierSize, magnifierSize, source.PixelFormat);
+
+            using var g = Graphics.FromImage(output);
+            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+            g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+            g.Clear(System.Drawing.Color.Black);
+
+            var srcX = Math.Clamp(centerX - MagnifierSampleRadius, 0, Math.Max(0, source.Width - sampleSize));
+            var srcY = Math.Clamp(centerY - MagnifierSampleRadius, 0, Math.Max(0, source.Height - sampleSize));
+
+            g.DrawImage(
+                source,
+                new System.Drawing.Rectangle(0, 0, magnifierSize, magnifierSize),
+                new System.Drawing.Rectangle(srcX, srcY, sampleSize, sampleSize),
+                GraphicsUnit.Pixel);
+
+            using var pen = new System.Drawing.Pen(System.Drawing.Color.Red, 1);
+            var center = MagnifierSampleRadius * MagnifierScale;
+            g.DrawRectangle(pen, center, center, MagnifierScale, MagnifierScale);
+
+            return output;
+        }
+
+        private void UpdateColorReadout(System.Drawing.Color color, int x, int y)
+        {
+            _lastSamplePoint = new System.Windows.Point(x, y);
+
+            var hexLabel = FindName("ColorHexLabel") as TextBlock;
+            var rgbaLabel = FindName("ColorRgbaLabel") as TextBlock;
+            var hsvLabel = FindName("ColorHsvLabel") as TextBlock;
+            var coordLabel = FindName("ColorCoordLabel") as TextBlock;
+
+            if (hexLabel != null)
+                hexLabel.Text = $"#{color.R:X2}{color.G:X2}{color.B:X2}";
+
+            if (rgbaLabel != null)
+                rgbaLabel.Text = $"{color.R}, {color.G}, {color.B}, {color.A}";
+
+            var hsv = ToHsv(color);
+            if (hsvLabel != null)
+                hsvLabel.Text = $"{hsv.H:F1}°, {hsv.S:F1}%, {hsv.V:F1}%";
+
+            if (coordLabel != null)
+                coordLabel.Text = $"({x}, {y})";
+        }
+
+        private void UpdateSelectedColorSwatch(System.Drawing.Color color)
+        {
+            var swatch = FindName("SelectedColorSwatch") as System.Windows.Shapes.Rectangle;
+            if (swatch != null)
+            {
+                swatch.Fill = new SolidColorBrush(System.Windows.Media.Color.FromArgb(color.A, color.R, color.G, color.B));
+            }
+        }
+
+        private bool TrySampleColorAtScreenPoint(int screenX, int screenY, out System.Drawing.Color color, out int x, out int y)
+        {
+            color = System.Drawing.Color.Transparent;
+            x = screenX;
+            y = screenY;
+
+            var sampleSize = (MagnifierSampleRadius * 2) + 1;
+            var srcX = screenX - MagnifierSampleRadius;
+            var srcY = screenY - MagnifierSampleRadius;
+
+            using var sample = new Bitmap(sampleSize, sampleSize, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            using (var g = Graphics.FromImage(sample))
+            {
+                g.CopyFromScreen(srcX, srcY, 0, 0, new System.Drawing.Size(sampleSize, sampleSize), CopyPixelOperation.SourceCopy);
+            }
+
+            var center = MagnifierSampleRadius;
+            color = sample.GetPixel(center, center);
+
+            using var magnifier = BuildMagnifierBitmap(sample, center, center);
+            var magnifierBitmap = BitmapToBitmapImage(magnifier);
+
+            var magnifierImage = FindName("ColorMagnifierImage") as WPFImage;
+            if (magnifierImage != null)
+                magnifierImage.Source = magnifierBitmap;
+
+            var floatingMagnifierImage = FindName("FloatingMagnifierImage") as WPFImage;
+            if (floatingMagnifierImage != null)
+                floatingMagnifierImage.Source = magnifierBitmap;
+
+            return true;
+        }
+
+        private void UpdateFloatingMagnifierPosition(int screenX, int screenY)
+        {
+            var popup = FindName("FloatingMagnifierPopup") as System.Windows.Controls.Primitives.Popup;
+            if (popup == null)
+                return;
+
+            const int offsetX = 18;
+            const int offsetY = 18;
+            popup.HorizontalOffset = screenX + offsetX;
+            popup.VerticalOffset = screenY + offsetY;
+
+            if (_isEyedropperActive && _isCapturing)
+                popup.IsOpen = true;
+        }
+
+        private async Task ExternalEyedropperLoopAsync(CancellationToken token)
+        {
+            while (!token.IsCancellationRequested && _isEyedropperActive && _isCapturing)
+            {
+                try
+                {
+                    if (Win32Interop.IsEscPressed())
+                    {
+                        await Dispatcher.BeginInvoke(() => CancelEyedropperMode());
+                        break;
+                    }
+
+                    if (!Win32Interop.TryGetCursorPos(out var point))
+                    {
+                        await Task.Delay(16, token);
+                        continue;
+                    }
+
+                    if (TrySampleColorAtScreenPoint(point.X, point.Y, out var sampledColor, out var x, out var y))
+                    {
+                        await Dispatcher.BeginInvoke(() =>
+                        {
+                            UpdateColorReadout(sampledColor, x, y);
+                            UpdateFloatingMagnifierPosition(point.X, point.Y);
+                            SetEyedropperUiState("Sampling target process... Left click to select, Esc to cancel", WPFBrushes.DodgerBlue);
+                        });
+                    }
+
+                    var leftMouseDown = Win32Interop.IsLeftMouseDown();
+                    if (leftMouseDown && !_wasLeftMouseDown)
+                    {
+                        _wasLeftMouseDown = true;
+
+                        if (TrySampleColorAtScreenPoint(point.X, point.Y, out var selected, out var sx, out var sy))
+                        {
+                            await Dispatcher.BeginInvoke(() =>
+                            {
+                                _selectedColor = selected;
+                                UpdateSelectedColorSwatch(selected);
+                                UpdateColorReadout(selected, sx, sy);
+                                _isEyedropperActive = false;
+                                Topmost = true;
+                                var popup = FindName("FloatingMagnifierPopup") as System.Windows.Controls.Primitives.Popup;
+                                if (popup != null)
+                                    popup.IsOpen = false;
+                                SetEyedropperUiState("Selected", WPFBrushes.DarkGreen);
+                            });
+                            break;
+                        }
+                    }
+                    else if (!leftMouseDown)
+                    {
+                        _wasLeftMouseDown = false;
+                    }
+
+                    await Task.Delay(16, token);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+                catch
+                {
+                    await Task.Delay(33, token);
+                }
+            }
+        }
+
+        private void PreviewBorder_MouseMove(object sender, MouseEventArgs e)
+        {
+            if (_isPanning && e.MiddleButton == MouseButtonState.Pressed && _zoomLevel > 1.0)
+            {
+                var current = e.GetPosition(PreviewBorder);
+                var delta = current - _lastPanPoint;
+                _lastPanPoint = current;
+
+                _panX += delta.X;
+                _panY += delta.Y;
+
+                UpdateZoomLevel();
+                return;
+            }
+
+            // Eyedropper sampling is external to this app (target process window).
+        }
+
+        private void PreviewBorder_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            // Eyedropper selection is now external to this app (target process window),
+            // so in-preview clicks are intentionally ignored.
+        }
+
         private void UpdateUIState()
         {
             var selectedMode = GetSelectedCaptureMode();
@@ -970,6 +1357,22 @@ namespace VisionDatasetCapture
 
             // Post-processing controls: only enabled when previewing but not capturing dataset
             SetPostProcessingControlsEnabled(_isCapturing && !_isCapturingDataset);
+
+            var eyedropperButton = FindName("EyedropperButton") as Button;
+            if (eyedropperButton != null)
+                eyedropperButton.IsEnabled = _isCapturing;
+
+            if (!_isCapturing && _isEyedropperActive)
+                CancelEyedropperMode();
+
+            if (!_isCapturing)
+            {
+                var popup = FindName("FloatingMagnifierPopup") as System.Windows.Controls.Primitives.Popup;
+                if (popup != null)
+                    popup.IsOpen = false;
+
+                SetEyedropperUiState("Inactive", WPFBrushes.Gray);
+            }
 
             StateLabel.Text = _isCapturingDataset ? "Capturing Dataset" : (_isCapturing ? "Previewing" : "Stopped");
             CaptureModeStatusLabel.Text = GetCaptureModeDisplayName(selectedMode);
