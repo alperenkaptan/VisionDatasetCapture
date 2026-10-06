@@ -1,6 +1,7 @@
 using System;
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.Linq;
 
 namespace VisionDatasetCapture
 {
@@ -14,7 +15,7 @@ namespace VisionDatasetCapture
                 throw new ArgumentNullException(nameof(settings));
 
             var output = (Bitmap)input.Clone();
-            if (!settings.Enabled)
+            if (!settings.Enabled || settings.Rules == null || settings.Rules.Count == 0)
                 return output;
 
             var pixelFormat = output.PixelFormat;
@@ -29,11 +30,26 @@ namespace VisionDatasetCapture
                 output = converted;
             }
 
-            RgbToHsv(settings.BaseR, settings.BaseG, settings.BaseB, out var baseH, out var baseS, out var baseV);
-            var hueTol = settings.HueTolerance;
-            var satTol = settings.SaturationTolerance;
-            var valTol = settings.ValueTolerance;
-            var strength = settings.EffectStrength;
+            var ruleSnapshots = settings.Rules
+                .Where(r => r != null && r.Enabled)
+                .Select(r =>
+                {
+                    RgbToHsv(r.BaseR, r.BaseG, r.BaseB, out var baseH, out var baseS, out var baseV);
+                    return new RuleSnapshot(
+                        r,
+                        baseH,
+                        baseS,
+                        baseV,
+                        Math.Clamp(r.HueTolerance, 0, 180),
+                        Math.Clamp(r.SaturationTolerance, 0, 1),
+                        Math.Clamp(r.ValueTolerance, 0, 1),
+                        Math.Clamp(r.EffectStrength, 0, 1));
+                })
+                .ToArray();
+
+            if (ruleSnapshots.Length == 0)
+                return output;
+
             var showMaskOverlay = settings.ShowMaskOverlay;
 
             var data = output.LockBits(
@@ -58,29 +74,36 @@ namespace VisionDatasetCapture
                             byte a = p[3];
 
                             RgbToHsv(r, g, b, out var h, out var s, out var v);
-                            var hueDelta = Math.Abs(baseH - h);
-                            if (hueDelta > 180)
-                                hueDelta = 360 - hueDelta;
 
-                            if (hueDelta > hueTol || Math.Abs(baseS - s) > satTol || Math.Abs(baseV - v) > valTol)
-                                continue;
-
-                            if (showMaskOverlay)
+                            for (var i = 0; i < ruleSnapshots.Length; i++)
                             {
-                                // Red mask overlay for matched pixels
-                                p[0] = (byte)(b * 0.35);
-                                p[1] = (byte)(g * 0.35);
-                                p[2] = ClampByte((int)(r * 0.35 + 255 * 0.65));
-                                p[3] = a;
-                                continue;
+                                var rule = ruleSnapshots[i];
+                                var hueDelta = Math.Abs(rule.BaseH - h);
+                                if (hueDelta > 180)
+                                    hueDelta = 360 - hueDelta;
+
+                                if (hueDelta > rule.HueTolerance || Math.Abs(rule.BaseS - s) > rule.SaturationTolerance || Math.Abs(rule.BaseV - v) > rule.ValueTolerance)
+                                    continue;
+
+                                if (showMaskOverlay)
+                                {
+                                    // Red mask overlay for matched pixels
+                                    p[0] = (byte)(b * 0.35);
+                                    p[1] = (byte)(g * 0.35);
+                                    p[2] = ClampByte((int)(r * 0.35 + 255 * 0.65));
+                                    p[3] = a;
+                                }
+                                else
+                                {
+                                    ApplyEffect(rule.Rule, rule.EffectStrength, ref r, ref g, ref b);
+                                    p[0] = b;
+                                    p[1] = g;
+                                    p[2] = r;
+                                    p[3] = a;
+                                }
+
+                                break;
                             }
-
-                            ApplyEffect(settings, strength, ref r, ref g, ref b);
-
-                            p[0] = b;
-                            p[1] = g;
-                            p[2] = r;
-                            p[3] = a;
                         }
                     }
                 }
@@ -93,9 +116,41 @@ namespace VisionDatasetCapture
             return output;
         }
 
-        private static void ApplyEffect(ColorEffectsSettings settings, double strength, ref byte r, ref byte g, ref byte b)
+        private readonly struct RuleSnapshot
         {
-            switch (settings.EffectMode)
+            public RuleSnapshot(
+                ColorEffectRule rule,
+                double baseH,
+                double baseS,
+                double baseV,
+                double hueTolerance,
+                double saturationTolerance,
+                double valueTolerance,
+                double effectStrength)
+            {
+                Rule = rule;
+                BaseH = baseH;
+                BaseS = baseS;
+                BaseV = baseV;
+                HueTolerance = hueTolerance;
+                SaturationTolerance = saturationTolerance;
+                ValueTolerance = valueTolerance;
+                EffectStrength = effectStrength;
+            }
+
+            public ColorEffectRule Rule { get; }
+            public double BaseH { get; }
+            public double BaseS { get; }
+            public double BaseV { get; }
+            public double HueTolerance { get; }
+            public double SaturationTolerance { get; }
+            public double ValueTolerance { get; }
+            public double EffectStrength { get; }
+        }
+
+        private static void ApplyEffect(ColorEffectRule rule, double strength, ref byte r, ref byte g, ref byte b)
+        {
+            switch (rule.EffectMode)
             {
                 case ColorEffectMode.Highlight:
                 {
@@ -107,9 +162,9 @@ namespace VisionDatasetCapture
                 }
                 case ColorEffectMode.ReplaceColor:
                 {
-                    r = Blend(r, settings.TargetR, strength);
-                    g = Blend(g, settings.TargetG, strength);
-                    b = Blend(b, settings.TargetB, strength);
+                    r = Blend(r, rule.TargetR, strength);
+                    g = Blend(g, rule.TargetG, strength);
+                    b = Blend(b, rule.TargetB, strength);
                     break;
                 }
                 case ColorEffectMode.Grayscale:
@@ -138,9 +193,9 @@ namespace VisionDatasetCapture
                 }
                 case ColorEffectMode.CustomColor:
                 {
-                    r = Blend(r, settings.TargetR, strength);
-                    g = Blend(g, settings.TargetG, strength);
-                    b = Blend(b, settings.TargetB, strength);
+                    r = Blend(r, rule.TargetR, strength);
+                    g = Blend(g, rule.TargetG, strength);
+                    b = Blend(b, rule.TargetB, strength);
                     break;
                 }
             }

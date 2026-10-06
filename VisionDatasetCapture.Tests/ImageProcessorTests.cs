@@ -441,6 +441,45 @@ namespace VisionDatasetCapture.Tests
                     Enabled = true,
                     Brightness = 0.3f,
                     Crop = new PostProcessingCropSettings { Enabled = true, Width = 100, Height = 100 }
+                },
+                ColorEffects = new ColorEffectsSettings
+                {
+                    ShowMaskOverlay = true,
+                    Rules =
+                    {
+                        new ColorEffectRule
+                        {
+                            Name = "Health Bar",
+                            Enabled = true,
+                            BaseR = 210,
+                            BaseG = 20,
+                            BaseB = 20,
+                            HueTolerance = 12,
+                            SaturationTolerance = 0.3,
+                            ValueTolerance = 0.25,
+                            EffectMode = ColorEffectMode.ReplaceColor,
+                            EffectStrength = 0.8,
+                            TargetR = 0,
+                            TargetG = 255,
+                            TargetB = 0
+                        },
+                        new ColorEffectRule
+                        {
+                            Name = "Mana",
+                            Enabled = false,
+                            BaseR = 20,
+                            BaseG = 20,
+                            BaseB = 200,
+                            HueTolerance = 10,
+                            SaturationTolerance = 0.2,
+                            ValueTolerance = 0.2,
+                            EffectMode = ColorEffectMode.Highlight,
+                            EffectStrength = 0.4,
+                            TargetR = 255,
+                            TargetG = 255,
+                            TargetB = 0
+                        }
+                    }
                 }
             };
 
@@ -459,6 +498,276 @@ namespace VisionDatasetCapture.Tests
             Assert.Equal(settings.PostProcessing.Enabled, deserialized.PostProcessing.Enabled);
             Assert.Equal(settings.PostProcessing.Brightness, deserialized.PostProcessing.Brightness);
             Assert.Equal(settings.PostProcessing.Crop.Width, deserialized.PostProcessing.Crop.Width);
+
+            Assert.NotNull(deserialized.ColorEffects);
+            Assert.NotNull(deserialized.ColorEffects.Rules);
+            Assert.Equal(2, deserialized.ColorEffects.Rules.Count);
+            Assert.Equal("Health Bar", deserialized.ColorEffects.Rules[0].Name);
+            Assert.Equal("Mana", deserialized.ColorEffects.Rules[1].Name);
+            Assert.True(deserialized.ColorEffects.Rules[0].Enabled);
+            Assert.False(deserialized.ColorEffects.Rules[1].Enabled);
+            Assert.Equal(ColorEffectMode.ReplaceColor, deserialized.ColorEffects.Rules[0].EffectMode);
+        }
+
+        [Fact]
+        public void ImportFromJson_LegacySingleRule_MigratesToRulesList()
+        {
+            // Arrange
+            var legacyJson = @"{
+              ""selectedProcessId"": 42,
+              ""datasetName"": ""Legacy"",
+              ""captureMode"": 0,
+              ""intervalSeconds"": 1,
+              ""manualKey"": ""K"",
+              ""colorEffects"": {
+                ""enabled"": true,
+                ""baseR"": 120,
+                ""baseG"": 130,
+                ""baseB"": 140,
+                ""hueTolerance"": 22,
+                ""saturationTolerance"": 0.15,
+                ""valueTolerance"": 0.10,
+                ""effectMode"": 1,
+                ""effectStrength"": 0.70,
+                ""targetR"": 5,
+                ""targetG"": 6,
+                ""targetB"": 7
+              }
+            }";
+
+            // Act
+            var imported = AppCaptureSettingsStore.ImportFromJson(legacyJson);
+
+            // Assert
+            Assert.NotNull(imported.ColorEffects);
+            Assert.NotNull(imported.ColorEffects.Rules);
+            Assert.Single(imported.ColorEffects.Rules);
+
+            var rule = imported.ColorEffects.Rules[0];
+            Assert.Equal("Color Effect 1", rule.Name);
+            Assert.True(rule.Enabled);
+            Assert.Equal((byte)120, rule.BaseR);
+            Assert.Equal((byte)130, rule.BaseG);
+            Assert.Equal((byte)140, rule.BaseB);
+            Assert.Equal(22, rule.HueTolerance);
+            Assert.Equal(0.15, rule.SaturationTolerance, 3);
+            Assert.Equal(0.10, rule.ValueTolerance, 3);
+            Assert.Equal(ColorEffectMode.ReplaceColor, rule.EffectMode);
+            Assert.Equal(0.70, rule.EffectStrength, 3);
+            Assert.Equal((byte)5, rule.TargetR);
+            Assert.Equal((byte)6, rule.TargetG);
+            Assert.Equal((byte)7, rule.TargetB);
+        }
+    }
+
+    public class ColorEffectsProcessorTests
+    {
+        private static Bitmap CreateBitmap(params Color[] pixels)
+        {
+            var bmp = new Bitmap(pixels.Length, 1, PixelFormat.Format32bppArgb);
+            for (var x = 0; x < pixels.Length; x++)
+                bmp.SetPixel(x, 0, pixels[x]);
+            return bmp;
+        }
+
+        private static Color GetPixel(Bitmap bmp, int x)
+        {
+            return bmp.GetPixel(x, 0);
+        }
+
+        [Fact]
+        public void Rules_AreEvaluatedInPriorityOrder_FirstMatchWins()
+        {
+            using var input = CreateBitmap(Color.FromArgb(255, 200, 20, 20));
+            var settings = new ColorEffectsSettings
+            {
+                Enabled = true,
+                ShowMaskOverlay = false,
+                Rules =
+                {
+                    new ColorEffectRule
+                    {
+                        Name = "First",
+                        Enabled = true,
+                        BaseR = 200,
+                        BaseG = 20,
+                        BaseB = 20,
+                        HueTolerance = 40,
+                        SaturationTolerance = 1,
+                        ValueTolerance = 1,
+                        EffectMode = ColorEffectMode.ReplaceColor,
+                        EffectStrength = 1,
+                        TargetR = 0,
+                        TargetG = 255,
+                        TargetB = 0
+                    },
+                    new ColorEffectRule
+                    {
+                        Name = "Second",
+                        Enabled = true,
+                        BaseR = 200,
+                        BaseG = 20,
+                        BaseB = 20,
+                        HueTolerance = 40,
+                        SaturationTolerance = 1,
+                        ValueTolerance = 1,
+                        EffectMode = ColorEffectMode.ReplaceColor,
+                        EffectStrength = 1,
+                        TargetR = 0,
+                        TargetG = 0,
+                        TargetB = 255
+                    }
+                }
+            };
+
+            using var result = ColorEffectsProcessor.Apply(input, settings);
+            var pixel = GetPixel(result, 0);
+
+            Assert.Equal((byte)0, pixel.R);
+            Assert.Equal((byte)255, pixel.G);
+            Assert.Equal((byte)0, pixel.B);
+        }
+
+        [Fact]
+        public void DisabledRules_AreIgnored()
+        {
+            using var input = CreateBitmap(Color.FromArgb(255, 210, 20, 20));
+            var settings = new ColorEffectsSettings
+            {
+                Enabled = true,
+                ShowMaskOverlay = false,
+                Rules =
+                {
+                    new ColorEffectRule
+                    {
+                        Name = "Disabled",
+                        Enabled = false,
+                        BaseR = 210,
+                        BaseG = 20,
+                        BaseB = 20,
+                        HueTolerance = 40,
+                        SaturationTolerance = 1,
+                        ValueTolerance = 1,
+                        EffectMode = ColorEffectMode.ReplaceColor,
+                        EffectStrength = 1,
+                        TargetR = 0,
+                        TargetG = 255,
+                        TargetB = 0
+                    }
+                }
+            };
+
+            using var result = ColorEffectsProcessor.Apply(input, settings);
+            var pixel = GetPixel(result, 0);
+
+            Assert.Equal((byte)210, pixel.R);
+            Assert.Equal((byte)20, pixel.G);
+            Assert.Equal((byte)20, pixel.B);
+        }
+
+        [Fact]
+        public void MatchingPixels_GetCorrectEffect()
+        {
+            using var input = CreateBitmap(Color.FromArgb(255, 180, 50, 50));
+            var settings = new ColorEffectsSettings
+            {
+                Enabled = true,
+                ShowMaskOverlay = false,
+                Rules =
+                {
+                    new ColorEffectRule
+                    {
+                        Name = "Replace",
+                        Enabled = true,
+                        BaseR = 180,
+                        BaseG = 50,
+                        BaseB = 50,
+                        HueTolerance = 30,
+                        SaturationTolerance = 1,
+                        ValueTolerance = 1,
+                        EffectMode = ColorEffectMode.ReplaceColor,
+                        EffectStrength = 1,
+                        TargetR = 5,
+                        TargetG = 15,
+                        TargetB = 25
+                    }
+                }
+            };
+
+            using var result = ColorEffectsProcessor.Apply(input, settings);
+            var pixel = GetPixel(result, 0);
+
+            Assert.Equal((byte)5, pixel.R);
+            Assert.Equal((byte)15, pixel.G);
+            Assert.Equal((byte)25, pixel.B);
+        }
+
+        [Fact]
+        public void MultipleRules_AreAppliedInSingleCall_ForDifferentPixels()
+        {
+            using var input = CreateBitmap(
+                Color.FromArgb(255, 210, 30, 30),
+                Color.FromArgb(255, 30, 30, 210),
+                Color.FromArgb(255, 20, 200, 20));
+
+            var settings = new ColorEffectsSettings
+            {
+                Enabled = true,
+                ShowMaskOverlay = false,
+                Rules =
+                {
+                    new ColorEffectRule
+                    {
+                        Name = "RedToGreen",
+                        Enabled = true,
+                        BaseR = 210,
+                        BaseG = 30,
+                        BaseB = 30,
+                        HueTolerance = 25,
+                        SaturationTolerance = 1,
+                        ValueTolerance = 1,
+                        EffectMode = ColorEffectMode.ReplaceColor,
+                        EffectStrength = 1,
+                        TargetR = 0,
+                        TargetG = 255,
+                        TargetB = 0
+                    },
+                    new ColorEffectRule
+                    {
+                        Name = "BlueToYellow",
+                        Enabled = true,
+                        BaseR = 30,
+                        BaseG = 30,
+                        BaseB = 210,
+                        HueTolerance = 25,
+                        SaturationTolerance = 1,
+                        ValueTolerance = 1,
+                        EffectMode = ColorEffectMode.ReplaceColor,
+                        EffectStrength = 1,
+                        TargetR = 255,
+                        TargetG = 255,
+                        TargetB = 0
+                    }
+                }
+            };
+
+            using var result = ColorEffectsProcessor.Apply(input, settings);
+            var p0 = GetPixel(result, 0);
+            var p1 = GetPixel(result, 1);
+            var p2 = GetPixel(result, 2);
+
+            Assert.Equal((byte)0, p0.R);
+            Assert.Equal((byte)255, p0.G);
+            Assert.Equal((byte)0, p0.B);
+
+            Assert.Equal((byte)255, p1.R);
+            Assert.Equal((byte)255, p1.G);
+            Assert.Equal((byte)0, p1.B);
+
+            // unmatched pixel should remain unchanged
+            Assert.Equal((byte)20, p2.R);
+            Assert.Equal((byte)200, p2.G);
+            Assert.Equal((byte)20, p2.B);
         }
     }
 }

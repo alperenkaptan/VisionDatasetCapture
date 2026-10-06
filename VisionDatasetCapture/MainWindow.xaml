@@ -197,98 +197,128 @@
                     <TextBox x:Name="ResizeHeightTextBox" Text="600" Margin="0,2,0,10" TextChanged="ResizeSettings_Changed"/>
                 </StackPanel>
 
-                <!-- Color Settings -->
+                <!-- Multi-color Effects (master/detail) -->
                 <Separator Margin="0,16,0,8"/>
-                <TextBlock Text="COLOR SETTINGS" FontWeight="Bold" Margin="0,0,0,8"/>
-
-                <Button x:Name="EyedropperButton" Content="Start Eyedropper" Height="32" Click="EyedropperButton_Click" Background="SlateBlue" Foreground="White" FontWeight="Bold" Margin="0,0,0,10"/>
-
-                <Grid Margin="0,0,0,10">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="80"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
-                    <Border Grid.Column="0" Width="72" Height="72" BorderBrush="Gray" BorderThickness="1" Background="Black">
-                        <Image x:Name="ColorMagnifierImage" Stretch="Fill"/>
-                    </Border>
-                    <Border Grid.Column="1" Margin="10,0,0,0" BorderBrush="Gray" BorderThickness="1" Background="White" Height="72">
-                        <Rectangle x:Name="SelectedColorSwatch" Fill="Transparent"/>
-                    </Border>
-                </Grid>
-
-                <Grid Margin="0,0,0,10">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="70"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
-                    <Grid.RowDefinitions>
-                        <RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/>
-                    </Grid.RowDefinitions>
-
-                    <TextBlock Grid.Row="0" Text="HEX:"/>
-                    <TextBox Grid.Row="0" Grid.Column="1" x:Name="ColorHexInput" Text="#FFFFFF" Margin="0,0,0,4" LostFocus="ColorHexInput_LostFocus" KeyDown="ColorInput_KeyDown"/>
-                    <TextBlock Grid.Row="1" Text="RGBA:"/>
-                    <TextBox Grid.Row="1" Grid.Column="1" x:Name="ColorRgbaInput" Text="255,255,255,255" Margin="0,0,0,4" LostFocus="ColorRgbaInput_LostFocus" KeyDown="ColorInput_KeyDown"/>
-                    <TextBlock Grid.Row="2" Text="HSV:"/>
-                    <TextBox Grid.Row="2" Grid.Column="1" x:Name="ColorHsvInput" Text="0,0,100" Margin="0,0,0,4" LostFocus="ColorHsvInput_LostFocus" KeyDown="ColorInput_KeyDown"/>
-                    <TextBlock Grid.Row="3" Text="Coord:"/>
-                    <TextBlock Grid.Row="3" Grid.Column="1" x:Name="ColorCoordLabel" Text="-" TextDecorations="Underline" Cursor="Hand" ToolTip="Click to move mouse to this coordinate" MouseLeftButtonDown="ColorCoordLabel_MouseLeftButtonDown"/>
-                    <TextBlock Grid.Row="4" Grid.Column="1" x:Name="EyedropperStateLabel" Text="Inactive" Foreground="Gray"/>
-                </Grid>
-
-                <!-- Separate Color Effects Settings (independent from global Post-Processing) -->
-                <Separator Margin="0,8,0,8"/>
                 <TextBlock Text="COLOR EFFECTS" FontWeight="Bold" Margin="0,0,0,8"/>
 
-                <CheckBox x:Name="ColorEffectsEnabledCheckBox" Content="Enable Color Effects" Margin="0,0,0,8" Checked="ColorEffectsSettings_Changed" Unchecked="ColorEffectsSettings_Changed"/>
-                <CheckBox x:Name="ColorEffectsMaskOverlayCheckBox" Content="Show Mask Overlay" Margin="0,0,0,6" Checked="ColorEffectsSettings_Changed" Unchecked="ColorEffectsSettings_Changed"/>
-                <CheckBox x:Name="ColorEffectsFreezeFrameCheckBox" Content="Freeze Frame" Margin="0,0,0,10" Checked="ColorEffectsSettings_Changed" Unchecked="ColorEffectsSettings_Changed"/>
-
-                <TextBlock Text="Hue tolerance (degrees)"/>
-                <Grid Margin="0,2,0,8">
+                <Grid Margin="0,0,0,12">
                     <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="180"/>
+                        <ColumnDefinition Width="12"/>
                         <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="70"/>
                     </Grid.ColumnDefinitions>
-                    <Slider x:Name="ColorEffectsHueToleranceSlider" Grid.Column="0" Minimum="0" Maximum="180" Value="15" TickFrequency="1" ValueChanged="ColorEffectsSettings_Changed"/>
-                    <TextBox x:Name="ColorEffectsHueToleranceInput" Grid.Column="1" Text="15" Margin="8,0,0,0" VerticalAlignment="Center" LostFocus="ColorEffectsNumericInput_LostFocus" KeyDown="ColorEffectsNumericInput_KeyDown"/>
+
+                    <!-- LEFT: rules list -->
+                    <StackPanel Grid.Column="0">
+                        <TextBlock Text="Rules" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                        <ListBox x:Name="ColorEffectsRulesListBox" Height="210" SelectionChanged="ColorEffectsRulesListBox_SelectionChanged" Margin="0,0,0,6">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Orientation="Horizontal" Margin="2">
+                                        <Rectangle Width="14" Height="14" Stroke="Gray" StrokeThickness="1" Fill="{Binding SwatchBrush}" Margin="0,0,6,0"/>
+                                        <TextBlock Text="{Binding DisplayName}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                        <TextBlock x:Name="ColorEffectsRulesEmptyStateText" Text="No color effects configured" Foreground="Gray" Margin="0,0,0,6" Visibility="Collapsed"/>
+                        <StackPanel Orientation="Horizontal">
+                            <Button x:Name="AddColorRuleButton" Content="Add Color" Height="30" Width="84" Click="AddColorRuleButton_Click" Margin="0,0,4,0"/>
+                            <Button x:Name="RemoveColorRuleButton" Content="Remove" Height="30" Width="84" Click="RemoveColorRuleButton_Click"/>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <!-- RIGHT: existing detail controls for selected rule -->
+                    <StackPanel Grid.Column="2">
+                        <TextBlock Text="Selected Rule" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                        <TextBox x:Name="ColorEffectRuleNameInput" Margin="0,0,0,8" Text="Color Effect 1" LostFocus="ColorEffectRuleNameInput_LostFocus" KeyDown="ColorEffectRuleNameInput_KeyDown"/>
+
+                        <Button x:Name="EyedropperButton" Content="Start Eyedropper" Height="32" Click="EyedropperButton_Click" Background="SlateBlue" Foreground="White" FontWeight="Bold" Margin="0,0,0,10"/>
+
+                        <Grid Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="80"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Border Grid.Column="0" Width="72" Height="72" BorderBrush="Gray" BorderThickness="1" Background="Black">
+                                <Image x:Name="ColorMagnifierImage" Stretch="Fill"/>
+                            </Border>
+                            <Border Grid.Column="1" Margin="10,0,0,0" BorderBrush="Gray" BorderThickness="1" Background="White" Height="72">
+                                <Rectangle x:Name="SelectedColorSwatch" Fill="Transparent"/>
+                            </Border>
+                        </Grid>
+
+                        <Grid Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="70"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/>
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Grid.Row="0" Text="HEX:"/>
+                            <TextBox Grid.Row="0" Grid.Column="1" x:Name="ColorHexInput" Text="#FFFFFF" Margin="0,0,0,4" LostFocus="ColorHexInput_LostFocus" KeyDown="ColorInput_KeyDown"/>
+                            <TextBlock Grid.Row="1" Text="RGBA:"/>
+                            <TextBox Grid.Row="1" Grid.Column="1" x:Name="ColorRgbaInput" Text="255,255,255,255" Margin="0,0,0,4" LostFocus="ColorRgbaInput_LostFocus" KeyDown="ColorInput_KeyDown"/>
+                            <TextBlock Grid.Row="2" Text="HSV:"/>
+                            <TextBox Grid.Row="2" Grid.Column="1" x:Name="ColorHsvInput" Text="0,0,100" Margin="0,0,0,4" LostFocus="ColorHsvInput_LostFocus" KeyDown="ColorInput_KeyDown"/>
+                            <TextBlock Grid.Row="3" Text="Coord:"/>
+                            <TextBlock Grid.Row="3" Grid.Column="1" x:Name="ColorCoordLabel" Text="-" TextDecorations="Underline" Cursor="Hand" ToolTip="Click to move mouse to this coordinate" MouseLeftButtonDown="ColorCoordLabel_MouseLeftButtonDown"/>
+                            <TextBlock Grid.Row="4" Grid.Column="1" x:Name="EyedropperStateLabel" Text="Inactive" Foreground="Gray"/>
+                        </Grid>
+
+                        <CheckBox x:Name="ColorEffectsEnabledCheckBox" Content="Enable Color Effects" Margin="0,0,0,8" Checked="ColorEffectsSettings_Changed" Unchecked="ColorEffectsSettings_Changed"/>
+                        <CheckBox x:Name="ColorEffectsMaskOverlayCheckBox" Content="Show Mask Overlay" Margin="0,0,0,6" Checked="ColorEffectsSettings_Changed" Unchecked="ColorEffectsSettings_Changed"/>
+                        <CheckBox x:Name="ColorEffectsFreezeFrameCheckBox" Content="Freeze Frame" Margin="0,0,0,10" Checked="ColorEffectsSettings_Changed" Unchecked="ColorEffectsSettings_Changed"/>
+
+                        <TextBlock Text="Hue tolerance (degrees)"/>
+                        <Grid Margin="0,2,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="70"/>
+                            </Grid.ColumnDefinitions>
+                            <Slider x:Name="ColorEffectsHueToleranceSlider" Grid.Column="0" Minimum="0" Maximum="180" Value="15" TickFrequency="1" ValueChanged="ColorEffectsSettings_Changed"/>
+                            <TextBox x:Name="ColorEffectsHueToleranceInput" Grid.Column="1" Text="15" Margin="8,0,0,0" VerticalAlignment="Center" LostFocus="ColorEffectsNumericInput_LostFocus" KeyDown="ColorEffectsNumericInput_KeyDown"/>
+                        </Grid>
+
+                        <TextBlock Text="Saturation tolerance"/>
+                        <Grid Margin="0,2,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="70"/>
+                            </Grid.ColumnDefinitions>
+                            <Slider x:Name="ColorEffectsSaturationToleranceSlider" Grid.Column="0" Minimum="0" Maximum="1" Value="0.2" TickFrequency="0.01" ValueChanged="ColorEffectsSettings_Changed"/>
+                            <TextBox x:Name="ColorEffectsSaturationToleranceInput" Grid.Column="1" Text="0.20" Margin="8,0,0,0" VerticalAlignment="Center" LostFocus="ColorEffectsNumericInput_LostFocus" KeyDown="ColorEffectsNumericInput_KeyDown"/>
+                        </Grid>
+
+                        <TextBlock Text="Value tolerance"/>
+                        <Grid Margin="0,2,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="70"/>
+                            </Grid.ColumnDefinitions>
+                            <Slider x:Name="ColorEffectsValueToleranceSlider" Grid.Column="0" Minimum="0" Maximum="1" Value="0.2" TickFrequency="0.01" ValueChanged="ColorEffectsSettings_Changed"/>
+                            <TextBox x:Name="ColorEffectsValueToleranceInput" Grid.Column="1" Text="0.20" Margin="8,0,0,0" VerticalAlignment="Center" LostFocus="ColorEffectsNumericInput_LostFocus" KeyDown="ColorEffectsNumericInput_KeyDown"/>
+                        </Grid>
+
+                        <TextBlock Text="Effect"/>
+                        <ComboBox x:Name="ColorEffectsModeComboBox" Margin="0,2,0,10" SelectionChanged="ColorEffectsSettings_Changed"/>
+
+                        <TextBlock Text="Effect strength"/>
+                        <Grid Margin="0,2,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="70"/>
+                            </Grid.ColumnDefinitions>
+                            <Slider x:Name="ColorEffectsStrengthSlider" Grid.Column="0" Minimum="0" Maximum="1" Value="0.5" TickFrequency="0.01" ValueChanged="ColorEffectsSettings_Changed"/>
+                            <TextBox x:Name="ColorEffectsStrengthInput" Grid.Column="1" Text="0.50" Margin="8,0,0,0" VerticalAlignment="Center" LostFocus="ColorEffectsNumericInput_LostFocus" KeyDown="ColorEffectsNumericInput_KeyDown"/>
+                        </Grid>
+
+                        <TextBlock Text="Target / custom color (HEX #RRGGBB)"/>
+                        <TextBox x:Name="ColorEffectsTargetHexTextBox" Text="#FFFF00" Margin="0,2,0,10" TextChanged="ColorEffectsTargetHexTextBox_TextChanged"/>
+                    </StackPanel>
                 </Grid>
-
-                <TextBlock Text="Saturation tolerance"/>
-                <Grid Margin="0,2,0,8">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="70"/>
-                    </Grid.ColumnDefinitions>
-                    <Slider x:Name="ColorEffectsSaturationToleranceSlider" Grid.Column="0" Minimum="0" Maximum="1" Value="0.2" TickFrequency="0.01" ValueChanged="ColorEffectsSettings_Changed"/>
-                    <TextBox x:Name="ColorEffectsSaturationToleranceInput" Grid.Column="1" Text="0.20" Margin="8,0,0,0" VerticalAlignment="Center" LostFocus="ColorEffectsNumericInput_LostFocus" KeyDown="ColorEffectsNumericInput_KeyDown"/>
-                </Grid>
-
-                <TextBlock Text="Value tolerance"/>
-                <Grid Margin="0,2,0,8">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="70"/>
-                    </Grid.ColumnDefinitions>
-                    <Slider x:Name="ColorEffectsValueToleranceSlider" Grid.Column="0" Minimum="0" Maximum="1" Value="0.2" TickFrequency="0.01" ValueChanged="ColorEffectsSettings_Changed"/>
-                    <TextBox x:Name="ColorEffectsValueToleranceInput" Grid.Column="1" Text="0.20" Margin="8,0,0,0" VerticalAlignment="Center" LostFocus="ColorEffectsNumericInput_LostFocus" KeyDown="ColorEffectsNumericInput_KeyDown"/>
-                </Grid>
-
-                <TextBlock Text="Effect"/>
-                <ComboBox x:Name="ColorEffectsModeComboBox" Margin="0,2,0,10" SelectionChanged="ColorEffectsSettings_Changed"/>
-
-                <TextBlock Text="Effect strength"/>
-                <Grid Margin="0,2,0,8">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="70"/>
-                    </Grid.ColumnDefinitions>
-                    <Slider x:Name="ColorEffectsStrengthSlider" Grid.Column="0" Minimum="0" Maximum="1" Value="0.5" TickFrequency="0.01" ValueChanged="ColorEffectsSettings_Changed"/>
-                    <TextBox x:Name="ColorEffectsStrengthInput" Grid.Column="1" Text="0.50" Margin="8,0,0,0" VerticalAlignment="Center" LostFocus="ColorEffectsNumericInput_LostFocus" KeyDown="ColorEffectsNumericInput_KeyDown"/>
-                </Grid>
-
-                <TextBlock Text="Target / custom color (HEX #RRGGBB)"/>
-                <TextBox x:Name="ColorEffectsTargetHexTextBox" Text="#FFFF00" Margin="0,2,0,10" TextChanged="ColorEffectsTargetHexTextBox_TextChanged"/>
 
                 <!-- Settings Management -->
                 <Separator Margin="0,16,0,8"/>

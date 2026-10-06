@@ -3,6 +3,7 @@ using System.Globalization;
 using System.IO;
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.Linq;
 using DrawingBitmap = System.Drawing.Bitmap;
 using System.Windows;
 using System.Windows.Controls;
@@ -42,9 +43,11 @@ namespace VisionDatasetCapture
         private Bitmap? _latestRawCapturedFrame;
         private PostProcessingSettings _currentPostProcessingSettings = new();
         private ColorEffectsSettings _currentColorEffectsSettings = new();
+        private int _selectedColorRuleIndex = -1;
         private bool _isFreezeFrameActive;
         private bool _isUpdatingColorInputs;
         private bool _isUpdatingColorEffectsNumericInputs;
+        private bool _areColorEffectsControlsEnabled;
         private readonly DispatcherTimer _colorEffectsUpdateDebounceTimer = new()
         {
             Interval = TimeSpan.FromMilliseconds(75)
@@ -159,39 +162,237 @@ namespace VisionDatasetCapture
             ((TextBox)FindName("ResizeHeightTextBox")).Text = postProc.Resize.Height.ToString();
         }
 
+        private sealed class ColorEffectRuleListItem
+        {
+            public string DisplayName { get; init; } = string.Empty;
+            public SolidColorBrush SwatchBrush { get; init; } = new SolidColorBrush(System.Windows.Media.Colors.Transparent);
+            public int RuleIndex { get; init; }
+        }
+
         private void ConfigureColorEffectsUI()
         {
+            EnsureColorRulesInitialized();
+
             var colorFx = _currentColorEffectsSettings;
 
-            ((CheckBox)FindName("ColorEffectsEnabledCheckBox")).IsChecked = colorFx.Enabled;
             ((CheckBox)FindName("ColorEffectsMaskOverlayCheckBox")).IsChecked = colorFx.ShowMaskOverlay;
             ((CheckBox)FindName("ColorEffectsFreezeFrameCheckBox")).IsChecked = colorFx.FreezeFrame;
-            ((Slider)FindName("ColorEffectsHueToleranceSlider")).Value = colorFx.HueTolerance;
-            ((Slider)FindName("ColorEffectsSaturationToleranceSlider")).Value = colorFx.SaturationTolerance;
-            ((Slider)FindName("ColorEffectsValueToleranceSlider")).Value = colorFx.ValueTolerance;
-            ((Slider)FindName("ColorEffectsStrengthSlider")).Value = colorFx.EffectStrength;
-            ((TextBox)FindName("ColorEffectsTargetHexTextBox")).Text = $"#{colorFx.TargetR:X2}{colorFx.TargetG:X2}{colorFx.TargetB:X2}";
 
             var modeCombo = (ComboBox)FindName("ColorEffectsModeComboBox");
             modeCombo.ItemsSource = Enum.GetValues(typeof(ColorEffectMode));
-            modeCombo.SelectedItem = colorFx.EffectMode;
 
-            var hueInput = (TextBox)FindName("ColorEffectsHueToleranceInput");
-            var satInput = (TextBox)FindName("ColorEffectsSaturationToleranceInput");
-            var valInput = (TextBox)FindName("ColorEffectsValueToleranceInput");
-            var strengthInput = (TextBox)FindName("ColorEffectsStrengthInput");
-            hueInput.Text = colorFx.HueTolerance.ToString("F0", CultureInfo.InvariantCulture);
-            satInput.Text = colorFx.SaturationTolerance.ToString("F2", CultureInfo.InvariantCulture);
-            valInput.Text = colorFx.ValueTolerance.ToString("F2", CultureInfo.InvariantCulture);
-            strengthInput.Text = colorFx.EffectStrength.ToString("F2", CultureInfo.InvariantCulture);
+            if (_selectedColorRuleIndex < 0 && colorFx.Rules.Count > 0)
+                _selectedColorRuleIndex = 0;
+
+            RefreshColorEffectsRulesList();
+            ApplySelectedRuleToControls();
+            UpdateColorRulesUiState();
+        }
+
+        private void EnsureColorRulesInitialized()
+        {
+            _currentColorEffectsSettings.Rules ??= new List<ColorEffectRule>();
+
+            if (_currentColorEffectsSettings.Rules.Count == 0)
+            {
+                _selectedColorRuleIndex = -1;
+                _currentColorEffectsSettings.Enabled = false;
+                return;
+            }
+
+            _selectedColorRuleIndex = Math.Clamp(_selectedColorRuleIndex, 0, _currentColorEffectsSettings.Rules.Count - 1);
+            _currentColorEffectsSettings.Enabled = _currentColorEffectsSettings.Rules.Any(r => r.Enabled);
+        }
+
+        private ColorEffectRule CreateDefaultColorRule(string name)
+        {
+            return new ColorEffectRule
+            {
+                Name = name,
+                Enabled = true,
+                BaseR = 255,
+                BaseG = 255,
+                BaseB = 255,
+                HueTolerance = 15,
+                SaturationTolerance = 0.20,
+                ValueTolerance = 0.20,
+                EffectMode = ColorEffectMode.Highlight,
+                EffectStrength = 0.5,
+                TargetR = 255,
+                TargetG = 255,
+                TargetB = 0
+            };
+        }
+
+        private string GetNextColorRuleName()
+        {
+            var existing = _currentColorEffectsSettings.Rules
+                .Select(r => r?.Name)
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .ToList();
+
+            var next = 1;
+            while (existing.Any(n => string.Equals(n, $"Color Effect {next}", StringComparison.OrdinalIgnoreCase)))
+                next++;
+
+            return $"Color Effect {next}";
+        }
+
+        private ColorEffectRule? GetSelectedColorRule()
+        {
+            var rules = _currentColorEffectsSettings.Rules;
+            if (rules == null || rules.Count == 0)
+                return null;
+            if (_selectedColorRuleIndex < 0 || _selectedColorRuleIndex >= rules.Count)
+                return null;
+            return rules[_selectedColorRuleIndex];
+        }
+
+        private void RefreshColorEffectsRulesList()
+        {
+            var list = FindName("ColorEffectsRulesListBox") as ListBox;
+            if (list == null)
+                return;
+
+            _isUpdatingColorInputs = true;
+            try
+            {
+                var items = _currentColorEffectsSettings.Rules
+                    .Select((r, i) => new ColorEffectRuleListItem
+                    {
+                        RuleIndex = i,
+                        DisplayName = (string.IsNullOrWhiteSpace(r.Name) ? $"Color Effect {i + 1}" : r.Name) + (r.Enabled ? string.Empty : " (Off)"),
+                        SwatchBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(r.BaseR, r.BaseG, r.BaseB))
+                    })
+                    .ToList();
+
+                list.ItemsSource = items;
+                list.SelectedIndex = _selectedColorRuleIndex;
+            }
+            finally
+            {
+                _isUpdatingColorInputs = false;
+            }
+        }
+
+        private void ApplySelectedRuleToControls()
+        {
+            var rule = GetSelectedColorRule();
+            if (rule == null)
+            {
+                _selectedColor = null;
+                var swatch = FindName("SelectedColorSwatch") as System.Windows.Shapes.Rectangle;
+                if (swatch != null)
+                    swatch.Fill = WPFBrushes.Transparent;
+
+                var nameInput = FindName("ColorEffectRuleNameInput") as TextBox;
+                if (nameInput != null)
+                    nameInput.Text = string.Empty;
+
+                return;
+            }
+
+            _isUpdatingColorInputs = true;
+            _isUpdatingColorEffectsNumericInputs = true;
+            try
+            {
+                ((CheckBox)FindName("ColorEffectsEnabledCheckBox")).IsChecked = rule.Enabled;
+                ((Slider)FindName("ColorEffectsHueToleranceSlider")).Value = rule.HueTolerance;
+                ((Slider)FindName("ColorEffectsSaturationToleranceSlider")).Value = rule.SaturationTolerance;
+                ((Slider)FindName("ColorEffectsValueToleranceSlider")).Value = rule.ValueTolerance;
+                ((Slider)FindName("ColorEffectsStrengthSlider")).Value = rule.EffectStrength;
+                ((TextBox)FindName("ColorEffectsTargetHexTextBox")).Text = $"#{rule.TargetR:X2}{rule.TargetG:X2}{rule.TargetB:X2}";
+
+                var modeCombo = (ComboBox)FindName("ColorEffectsModeComboBox");
+                modeCombo.SelectedItem = rule.EffectMode;
+
+                var hueInput = (TextBox)FindName("ColorEffectsHueToleranceInput");
+                var satInput = (TextBox)FindName("ColorEffectsSaturationToleranceInput");
+                var valInput = (TextBox)FindName("ColorEffectsValueToleranceInput");
+                var strengthInput = (TextBox)FindName("ColorEffectsStrengthInput");
+                var nameInput = (TextBox)FindName("ColorEffectRuleNameInput");
+
+                hueInput.Text = rule.HueTolerance.ToString("F0", CultureInfo.InvariantCulture);
+                satInput.Text = rule.SaturationTolerance.ToString("F2", CultureInfo.InvariantCulture);
+                valInput.Text = rule.ValueTolerance.ToString("F2", CultureInfo.InvariantCulture);
+                strengthInput.Text = rule.EffectStrength.ToString("F2", CultureInfo.InvariantCulture);
+                if (nameInput != null)
+                    nameInput.Text = rule.Name;
+            }
+            finally
+            {
+                _isUpdatingColorEffectsNumericInputs = false;
+                _isUpdatingColorInputs = false;
+            }
+
+            SyncSelectedColorFromColorEffectsSettings();
+        }
+
+        private void UpdateColorRulesUiState()
+        {
+            var hasRule = GetSelectedColorRule() != null;
+
+            var emptyText = FindName("ColorEffectsRulesEmptyStateText") as TextBlock;
+            if (emptyText != null)
+                emptyText.Visibility = _currentColorEffectsSettings.Rules.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+            var addButton = FindName("AddColorRuleButton") as Button;
+            if (addButton != null)
+                addButton.IsEnabled = _areColorEffectsControlsEnabled;
+
+            var removeButton = FindName("RemoveColorRuleButton") as Button;
+            if (removeButton != null)
+                removeButton.IsEnabled = _areColorEffectsControlsEnabled && hasRule;
+
+            var ruleNameInput = FindName("ColorEffectRuleNameInput") as TextBox;
+            if (ruleNameInput != null)
+                ruleNameInput.IsEnabled = _areColorEffectsControlsEnabled && hasRule;
+
+            SetSelectedRuleDetailControlsEnabled(_areColorEffectsControlsEnabled && hasRule);
+        }
+
+        private void SetSelectedRuleDetailControlsEnabled(bool enabled)
+        {
+            var names = new[]
+            {
+                "EyedropperButton",
+                "ColorHexInput", "ColorRgbaInput", "ColorHsvInput",
+                "ColorEffectsEnabledCheckBox", "ColorEffectsMaskOverlayCheckBox", "ColorEffectsFreezeFrameCheckBox",
+                "ColorEffectsHueToleranceSlider", "ColorEffectsSaturationToleranceSlider", "ColorEffectsValueToleranceSlider", "ColorEffectsStrengthSlider",
+                "ColorEffectsHueToleranceInput", "ColorEffectsSaturationToleranceInput", "ColorEffectsValueToleranceInput", "ColorEffectsStrengthInput",
+                "ColorEffectsModeComboBox", "ColorEffectsTargetHexTextBox"
+            };
+
+            foreach (var name in names)
+            {
+                if (FindName(name) is FrameworkElement element)
+                    element.IsEnabled = enabled;
+            }
         }
 
         private void SyncSelectedColorFromColorEffectsSettings()
         {
+            var selectedRule = GetSelectedColorRule();
+            if (selectedRule == null)
+            {
+                _selectedColor = null;
+                var swatch = FindName("SelectedColorSwatch") as System.Windows.Shapes.Rectangle;
+                if (swatch != null)
+                    swatch.Fill = WPFBrushes.Transparent;
+
+                var hexInput = FindName("ColorHexInput") as TextBox;
+                var rgbaInput = FindName("ColorRgbaInput") as TextBox;
+                var hsvInput = FindName("ColorHsvInput") as TextBox;
+                if (hexInput != null) hexInput.Text = "";
+                if (rgbaInput != null) rgbaInput.Text = "";
+                if (hsvInput != null) hsvInput.Text = "";
+                return;
+            }
+
             var selected = System.Drawing.Color.FromArgb(255,
-                _currentColorEffectsSettings.BaseR,
-                _currentColorEffectsSettings.BaseG,
-                _currentColorEffectsSettings.BaseB);
+                selectedRule.BaseR,
+                selectedRule.BaseG,
+                selectedRule.BaseB);
 
             _selectedColor = selected;
             UpdateSelectedColorSwatch(selected);
@@ -216,8 +417,9 @@ namespace VisionDatasetCapture
 
             // Load color effects settings (separate stage)
             _currentColorEffectsSettings = (sanitized.ColorEffects ?? new ColorEffectsSettings()).Clone();
+            EnsureColorRulesInitialized();
+            _selectedColorRuleIndex = _currentColorEffectsSettings.Rules.Count > 0 ? 0 : -1;
             ConfigureColorEffectsUI();
-            SyncSelectedColorFromColorEffectsSettings();
 
             // Load zoom level
             _zoomLevel = sanitized.ZoomLevel;
@@ -240,9 +442,23 @@ namespace VisionDatasetCapture
                     ? NormalizeManualKeyText(key)
                     : "K",
                 PostProcessing = settings.PostProcessing ?? new PostProcessingSettings(),
-                ColorEffects = settings.ColorEffects ?? new ColorEffectsSettings(),
+                ColorEffects = (settings.ColorEffects ?? new ColorEffectsSettings()).Clone(),
                 ZoomLevel = settings.ZoomLevel >= 0.1 && settings.ZoomLevel <= 5.0 ? settings.ZoomLevel : 1.0
             };
+
+            sanitized.ColorEffects.Rules ??= new List<ColorEffectRule>();
+            // Keep empty list as-is (empty-state is supported). Legacy migration occurs in settings store defaults.
+
+            for (var i = 0; i < sanitized.ColorEffects.Rules.Count; i++)
+            {
+                var rule = sanitized.ColorEffects.Rules[i] ?? new ColorEffectRule();
+                rule.Name = string.IsNullOrWhiteSpace(rule.Name) ? $"Color Effect {i + 1}" : rule.Name.Trim();
+                rule.HueTolerance = Math.Clamp(rule.HueTolerance, 0, 180);
+                rule.SaturationTolerance = Math.Clamp(rule.SaturationTolerance, 0, 1);
+                rule.ValueTolerance = Math.Clamp(rule.ValueTolerance, 0, 1);
+                rule.EffectStrength = Math.Clamp(rule.EffectStrength, 0, 1);
+                sanitized.ColorEffects.Rules[i] = rule;
+            }
 
             return sanitized;
         }
@@ -1052,17 +1268,26 @@ namespace VisionDatasetCapture
 
         private void ColorEffectsSettings_Changed(object sender, RoutedEventArgs e)
         {
+            if (_isUpdatingColorInputs || _isUpdatingColorEffectsNumericInputs)
+                return;
+
             UpdateColorEffectsSettingsFromUI();
         }
 
         private void ColorEffectsSettings_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
         {
+            if (_isUpdatingColorInputs || _isUpdatingColorEffectsNumericInputs)
+                return;
+
             _colorEffectsUpdateDebounceTimer.Stop();
             _colorEffectsUpdateDebounceTimer.Start();
         }
 
         private void ColorEffectsTargetHexTextBox_TextChanged(object sender, TextChangedEventArgs e)
         {
+            if (_isUpdatingColorInputs || _isUpdatingColorEffectsNumericInputs)
+                return;
+
             UpdateColorEffectsSettingsFromUI();
         }
 
@@ -1094,44 +1319,66 @@ namespace VisionDatasetCapture
                 valSlider == null || modeCombo == null || strengthSlider == null || targetHexText == null)
                 return;
 
-            var targetColor = TryParseHexColor(targetHexText.Text, out var tr, out var tg, out var tb)
-                ? (TargetR: tr, TargetG: tg, TargetB: tb)
-                : (TargetR: _currentColorEffectsSettings.TargetR, TargetG: _currentColorEffectsSettings.TargetG, TargetB: _currentColorEffectsSettings.TargetB);
-
-            _currentColorEffectsSettings = new ColorEffectsSettings
+            EnsureColorRulesInitialized();
+            var selectedRule = GetSelectedColorRule();
+            if (selectedRule == null)
             {
-                Enabled = enabledCheck.IsChecked ?? false,
-                ShowMaskOverlay = maskCheck.IsChecked ?? false,
-                FreezeFrame = freezeCheck.IsChecked ?? false,
-                BaseR = _currentColorEffectsSettings.BaseR,
-                BaseG = _currentColorEffectsSettings.BaseG,
-                BaseB = _currentColorEffectsSettings.BaseB,
-                HueTolerance = hueSlider.Value,
-                SaturationTolerance = satSlider.Value,
-                ValueTolerance = valSlider.Value,
-                EffectMode = modeCombo.SelectedItem is ColorEffectMode mode ? mode : ColorEffectMode.Highlight,
-                EffectStrength = strengthSlider.Value,
-                TargetR = targetColor.TargetR,
-                TargetG = targetColor.TargetG,
-                TargetB = targetColor.TargetB
-            };
+                UpdateColorRulesUiState();
+                return;
+            }
+
+            selectedRule.Enabled = enabledCheck.IsChecked ?? true;
+            _currentColorEffectsSettings.Enabled = _currentColorEffectsSettings.Rules.Any(r => r.Enabled);
+            _currentColorEffectsSettings.ShowMaskOverlay = maskCheck.IsChecked ?? false;
+            _currentColorEffectsSettings.FreezeFrame = freezeCheck.IsChecked ?? false;
+
+            // Keep legacy fields synchronized with selected rule for backward-compatible exports/imports.
+            _currentColorEffectsSettings.BaseR = selectedRule.BaseR;
+            _currentColorEffectsSettings.BaseG = selectedRule.BaseG;
+            _currentColorEffectsSettings.BaseB = selectedRule.BaseB;
+
+            selectedRule.HueTolerance = hueSlider.Value;
+            selectedRule.SaturationTolerance = satSlider.Value;
+            selectedRule.ValueTolerance = valSlider.Value;
+            selectedRule.EffectMode = modeCombo.SelectedItem is ColorEffectMode mode ? mode : ColorEffectMode.Highlight;
+            selectedRule.EffectStrength = strengthSlider.Value;
+
+            _currentColorEffectsSettings.HueTolerance = selectedRule.HueTolerance;
+            _currentColorEffectsSettings.SaturationTolerance = selectedRule.SaturationTolerance;
+            _currentColorEffectsSettings.ValueTolerance = selectedRule.ValueTolerance;
+            _currentColorEffectsSettings.EffectMode = selectedRule.EffectMode;
+            _currentColorEffectsSettings.EffectStrength = selectedRule.EffectStrength;
+
+            if (TryParseHexColor(targetHexText.Text, out var tr, out var tg, out var tb))
+            {
+                selectedRule.TargetR = tr;
+                selectedRule.TargetG = tg;
+                selectedRule.TargetB = tb;
+
+                _currentColorEffectsSettings.TargetR = tr;
+                _currentColorEffectsSettings.TargetG = tg;
+                _currentColorEffectsSettings.TargetB = tb;
+            }
 
             _isUpdatingColorEffectsNumericInputs = true;
             try
             {
                 if (hueInput != null)
-                    hueInput.Text = _currentColorEffectsSettings.HueTolerance.ToString("F0", CultureInfo.InvariantCulture);
+                    hueInput.Text = selectedRule.HueTolerance.ToString("F0", CultureInfo.InvariantCulture);
                 if (satInput != null)
-                    satInput.Text = _currentColorEffectsSettings.SaturationTolerance.ToString("F2", CultureInfo.InvariantCulture);
+                    satInput.Text = selectedRule.SaturationTolerance.ToString("F2", CultureInfo.InvariantCulture);
                 if (valInput != null)
-                    valInput.Text = _currentColorEffectsSettings.ValueTolerance.ToString("F2", CultureInfo.InvariantCulture);
+                    valInput.Text = selectedRule.ValueTolerance.ToString("F2", CultureInfo.InvariantCulture);
                 if (strengthInput != null)
-                    strengthInput.Text = _currentColorEffectsSettings.EffectStrength.ToString("F2", CultureInfo.InvariantCulture);
+                    strengthInput.Text = selectedRule.EffectStrength.ToString("F2", CultureInfo.InvariantCulture);
             }
             finally
             {
                 _isUpdatingColorEffectsNumericInputs = false;
             }
+
+            RefreshColorEffectsRulesList();
+            UpdateColorRulesUiState();
 
             _isFreezeFrameActive = _isCapturing && _currentColorEffectsSettings.FreezeFrame;
             UpdateUIState();
@@ -1267,8 +1514,16 @@ namespace VisionDatasetCapture
 
         private void ApplyManualSelectedColor(byte r, byte g, byte b, byte a)
         {
+            EnsureColorRulesInitialized();
+            var selectedRule = GetSelectedColorRule();
+            if (selectedRule == null)
+                return;
+
             var color = System.Drawing.Color.FromArgb(a, r, g, b);
             _selectedColor = color;
+            selectedRule.BaseR = r;
+            selectedRule.BaseG = g;
+            selectedRule.BaseB = b;
             _currentColorEffectsSettings.BaseR = r;
             _currentColorEffectsSettings.BaseG = g;
             _currentColorEffectsSettings.BaseB = b;
@@ -1277,6 +1532,7 @@ namespace VisionDatasetCapture
             UpdateColorReadout(color, _lastSamplePoint.HasValue ? (int)_lastSamplePoint.Value.X : 0, _lastSamplePoint.HasValue ? (int)_lastSamplePoint.Value.Y : 0);
             UpdateColorInputsFromSelectedColor(color);
             UpdateMagnifierToSolidColor(color);
+            RefreshColorEffectsRulesList();
 
             if (_isFreezeFrameActive)
                 ReprocessAndRefreshFrozenFrame();
@@ -1344,6 +1600,91 @@ namespace VisionDatasetCapture
                     MoveFocus(new TraversalRequest(FocusNavigationDirection.Next));
                 e.Handled = true;
             }
+        }
+
+        private void ColorEffectsRulesListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_isUpdatingColorInputs)
+                return;
+
+            var list = sender as ListBox;
+            if (list == null)
+                return;
+
+            _selectedColorRuleIndex = list.SelectedIndex;
+            ApplySelectedRuleToControls();
+            UpdateColorRulesUiState();
+        }
+
+        private void AddColorRuleButton_Click(object sender, RoutedEventArgs e)
+        {
+            _currentColorEffectsSettings.Rules ??= new List<ColorEffectRule>();
+            _currentColorEffectsSettings.Rules.Add(CreateDefaultColorRule(GetNextColorRuleName()));
+            _currentColorEffectsSettings.Enabled = _currentColorEffectsSettings.Rules.Any(r => r.Enabled);
+            _selectedColorRuleIndex = _currentColorEffectsSettings.Rules.Count - 1;
+            RefreshColorEffectsRulesList();
+            ApplySelectedRuleToControls();
+            UpdateColorRulesUiState();
+            UpdatePreviewIfAvailable();
+            TrySaveCurrentSettings();
+        }
+
+        private void RemoveColorRuleButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (_currentColorEffectsSettings.Rules == null || _currentColorEffectsSettings.Rules.Count == 0)
+                return;
+            if (_selectedColorRuleIndex < 0 || _selectedColorRuleIndex >= _currentColorEffectsSettings.Rules.Count)
+                return;
+
+            _currentColorEffectsSettings.Rules.RemoveAt(_selectedColorRuleIndex);
+            _currentColorEffectsSettings.Enabled = _currentColorEffectsSettings.Rules.Any(r => r.Enabled);
+            if (_currentColorEffectsSettings.Rules.Count == 0)
+            {
+                _selectedColorRuleIndex = -1;
+                _selectedColor = null;
+            }
+            else
+            {
+                _selectedColorRuleIndex = Math.Clamp(_selectedColorRuleIndex, 0, _currentColorEffectsSettings.Rules.Count - 1);
+            }
+
+            RefreshColorEffectsRulesList();
+            ApplySelectedRuleToControls();
+            UpdateColorRulesUiState();
+            UpdatePreviewIfAvailable();
+            TrySaveCurrentSettings();
+        }
+
+        private void ColorEffectRuleNameInput_LostFocus(object sender, RoutedEventArgs e)
+        {
+            ApplyColorRuleNameFromInput();
+        }
+
+        private void ColorEffectRuleNameInput_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key != Key.Enter)
+                return;
+
+            ApplyColorRuleNameFromInput();
+            MoveFocus(new TraversalRequest(FocusNavigationDirection.Next));
+            e.Handled = true;
+        }
+
+        private void ApplyColorRuleNameFromInput()
+        {
+            if (_isUpdatingColorInputs)
+                return;
+
+            var selectedRule = GetSelectedColorRule();
+            var nameInput = FindName("ColorEffectRuleNameInput") as TextBox;
+            if (selectedRule == null || nameInput == null)
+                return;
+
+            var newName = string.IsNullOrWhiteSpace(nameInput.Text) ? GetNextColorRuleName() : nameInput.Text.Trim();
+            selectedRule.Name = newName;
+            nameInput.Text = newName;
+            RefreshColorEffectsRulesList();
+            TrySaveCurrentSettings();
         }
 
         private void ColorEffectsNumericInput_LostFocus(object sender, RoutedEventArgs e)
@@ -1643,21 +1984,7 @@ namespace VisionDatasetCapture
         {
             _lastSamplePoint = new System.Windows.Point(x, y);
 
-            var hexLabel = FindName("ColorHexLabel") as TextBlock;
-            var rgbaLabel = FindName("ColorRgbaLabel") as TextBlock;
-            var hsvLabel = FindName("ColorHsvLabel") as TextBlock;
             var coordLabel = FindName("ColorCoordLabel") as TextBlock;
-
-            if (hexLabel != null)
-                hexLabel.Text = $"#{color.R:X2}{color.G:X2}{color.B:X2}";
-
-            if (rgbaLabel != null)
-                rgbaLabel.Text = $"{color.R}, {color.G}, {color.B}, {color.A}";
-
-            var hsv = ToHsv(color);
-            if (hsvLabel != null)
-                hsvLabel.Text = $"{hsv.H:F1}°, {hsv.S:F1}%, {hsv.V:F1}%";
-
             if (coordLabel != null)
                 coordLabel.Text = _lastSamplePoint.HasValue || (x != 0 || y != 0) ? $"({x}, {y})" : "-";
         }
@@ -1807,15 +2134,25 @@ namespace VisionDatasetCapture
 
             if (TrySampleColorAtScreenPoint(point.X, point.Y, out var selected, out var sx, out var sy))
             {
+                EnsureColorRulesInitialized();
+                var selectedRule = GetSelectedColorRule();
+                if (selectedRule == null)
+                    return;
+
                 _selectedColor = selected;
                 UpdateSelectedColorSwatch(selected);
                 UpdateColorReadout(selected, sx, sy);
                 UpdateColorInputsFromSelectedColor(selected);
+                UpdateMagnifierToSolidColor(selected);
 
-                // Sync picked color as color-effects base color
+                // Sync picked color into selected rule
+                selectedRule.BaseR = selected.R;
+                selectedRule.BaseG = selected.G;
+                selectedRule.BaseB = selected.B;
                 _currentColorEffectsSettings.BaseR = selected.R;
                 _currentColorEffectsSettings.BaseG = selected.G;
                 _currentColorEffectsSettings.BaseB = selected.B;
+                RefreshColorEffectsRulesList();
 
                 // Reflect color effects UI state immediately
                 var targetHexTextBox = FindName("ColorEffectsTargetHexTextBox") as TextBox;
@@ -1982,12 +2319,18 @@ namespace VisionDatasetCapture
 
         private void SetColorEffectsControlsEnabled(bool enabled)
         {
+            _areColorEffectsControlsEnabled = enabled;
+
+            EnsureColorRulesInitialized();
+            if (_currentColorEffectsSettings.Rules.Count > 0)
+                _selectedColorRuleIndex = Math.Clamp(_selectedColorRuleIndex, 0, _currentColorEffectsSettings.Rules.Count - 1);
+
             var groups = new[]
             {
-                new[] { "ColorEffectsEnabledCheckBox", "ColorEffectsMaskOverlayCheckBox", "ColorEffectsFreezeFrameCheckBox" },
+                new[] { "ColorEffectsMaskOverlayCheckBox", "ColorEffectsFreezeFrameCheckBox", "ColorEffectRuleNameInput" },
                 new[] { "ColorEffectsHueToleranceSlider", "ColorEffectsSaturationToleranceSlider", "ColorEffectsValueToleranceSlider", "ColorEffectsStrengthSlider" },
-                new[] { "ColorEffectsHueToleranceLabel", "ColorEffectsSaturationToleranceLabel", "ColorEffectsValueToleranceLabel", "ColorEffectsStrengthLabel" },
-                new[] { "ColorEffectsModeComboBox", "ColorEffectsTargetHexTextBox" }
+                new[] { "ColorEffectsHueToleranceInput", "ColorEffectsSaturationToleranceInput", "ColorEffectsValueToleranceInput", "ColorEffectsStrengthInput" },
+                new[] { "ColorEffectsModeComboBox", "ColorEffectsTargetHexTextBox", "ColorEffectsRulesListBox", "AddColorRuleButton", "RemoveColorRuleButton" }
             };
 
             foreach (var group in groups)
@@ -2004,6 +2347,8 @@ namespace VisionDatasetCapture
             var freezeCheckbox = FindName("ColorEffectsFreezeFrameCheckBox") as CheckBox;
             if (freezeCheckbox != null && _isCapturing && !_isCapturingDataset)
                 freezeCheckbox.IsEnabled = true;
+
+            UpdateColorRulesUiState();
         }
 
         private static string GetCaptureModeDisplayName(CaptureMode mode)

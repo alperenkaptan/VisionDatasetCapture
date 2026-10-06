@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -84,11 +86,10 @@ namespace VisionDatasetCapture
         CustomColor
     }
 
-    public class ColorEffectsSettings
+    public class ColorEffectRule
     {
-        public bool Enabled { get; set; } = false;
-        public bool ShowMaskOverlay { get; set; } = false;
-        public bool FreezeFrame { get; set; } = false;
+        public string Name { get; set; } = "Color Effect 1";
+        public bool Enabled { get; set; } = true;
 
         // Base selected color (from eyedropper)
         public byte BaseR { get; set; } = 255;
@@ -96,7 +97,7 @@ namespace VisionDatasetCapture
         public byte BaseB { get; set; } = 255;
 
         // HSV tolerances
-        public double HueTolerance { get; set; } = 15;         // degrees, 0-180
+        public double HueTolerance { get; set; } = 15;          // degrees, 0-180
         public double SaturationTolerance { get; set; } = 0.20; // 0-1
         public double ValueTolerance { get; set; } = 0.20;      // 0-1
 
@@ -108,6 +109,49 @@ namespace VisionDatasetCapture
         public byte TargetG { get; set; } = 255;
         public byte TargetB { get; set; } = 0;
 
+        public ColorEffectRule Clone()
+        {
+            return new ColorEffectRule
+            {
+                Name = Name,
+                Enabled = Enabled,
+                BaseR = BaseR,
+                BaseG = BaseG,
+                BaseB = BaseB,
+                HueTolerance = HueTolerance,
+                SaturationTolerance = SaturationTolerance,
+                ValueTolerance = ValueTolerance,
+                EffectMode = EffectMode,
+                EffectStrength = EffectStrength,
+                TargetR = TargetR,
+                TargetG = TargetG,
+                TargetB = TargetB
+            };
+        }
+    }
+
+    public class ColorEffectsSettings
+    {
+        public bool Enabled { get; set; } = false;
+        public bool ShowMaskOverlay { get; set; } = false;
+        public bool FreezeFrame { get; set; } = false;
+
+        // Multi-color rules (priority = list order)
+        public List<ColorEffectRule> Rules { get; set; } = new();
+
+        // Legacy single-rule fields retained for backward compatibility/migration.
+        public byte BaseR { get; set; } = 255;
+        public byte BaseG { get; set; } = 255;
+        public byte BaseB { get; set; } = 255;
+        public double HueTolerance { get; set; } = 15;
+        public double SaturationTolerance { get; set; } = 0.20;
+        public double ValueTolerance { get; set; } = 0.20;
+        public ColorEffectMode EffectMode { get; set; } = ColorEffectMode.Highlight;
+        public double EffectStrength { get; set; } = 0.5;
+        public byte TargetR { get; set; } = 255;
+        public byte TargetG { get; set; } = 255;
+        public byte TargetB { get; set; } = 0;
+
         public ColorEffectsSettings Clone()
         {
             return new ColorEffectsSettings
@@ -115,6 +159,7 @@ namespace VisionDatasetCapture
                 Enabled = Enabled,
                 ShowMaskOverlay = ShowMaskOverlay,
                 FreezeFrame = FreezeFrame,
+                Rules = Rules.Select(r => r.Clone()).ToList(),
                 BaseR = BaseR,
                 BaseG = BaseG,
                 BaseB = BaseB,
@@ -252,12 +297,46 @@ namespace VisionDatasetCapture
 
             // Ensure ColorEffectsSettings is not null
             settings.ColorEffects ??= new ColorEffectsSettings();
+            settings.ColorEffects.Rules ??= new List<ColorEffectRule>();
 
-            // Clamp color effects ranges
+            // Migrate legacy single-rule settings if no rules are present.
+            if (settings.ColorEffects.Rules.Count == 0)
+            {
+                settings.ColorEffects.Rules.Add(new ColorEffectRule
+                {
+                    Name = "Color Effect 1",
+                    Enabled = settings.ColorEffects.Enabled,
+                    BaseR = settings.ColorEffects.BaseR,
+                    BaseG = settings.ColorEffects.BaseG,
+                    BaseB = settings.ColorEffects.BaseB,
+                    HueTolerance = settings.ColorEffects.HueTolerance,
+                    SaturationTolerance = settings.ColorEffects.SaturationTolerance,
+                    ValueTolerance = settings.ColorEffects.ValueTolerance,
+                    EffectMode = settings.ColorEffects.EffectMode,
+                    EffectStrength = settings.ColorEffects.EffectStrength,
+                    TargetR = settings.ColorEffects.TargetR,
+                    TargetG = settings.ColorEffects.TargetG,
+                    TargetB = settings.ColorEffects.TargetB
+                });
+            }
+
+            // Clamp legacy settings
             settings.ColorEffects.HueTolerance = Math.Clamp(settings.ColorEffects.HueTolerance, 0, 180);
             settings.ColorEffects.SaturationTolerance = Math.Clamp(settings.ColorEffects.SaturationTolerance, 0, 1);
             settings.ColorEffects.ValueTolerance = Math.Clamp(settings.ColorEffects.ValueTolerance, 0, 1);
             settings.ColorEffects.EffectStrength = Math.Clamp(settings.ColorEffects.EffectStrength, 0, 1);
+
+            // Clamp and sanitize rules
+            for (var i = 0; i < settings.ColorEffects.Rules.Count; i++)
+            {
+                var rule = settings.ColorEffects.Rules[i] ?? new ColorEffectRule();
+                rule.Name = string.IsNullOrWhiteSpace(rule.Name) ? $"Color Effect {i + 1}" : rule.Name.Trim();
+                rule.HueTolerance = Math.Clamp(rule.HueTolerance, 0, 180);
+                rule.SaturationTolerance = Math.Clamp(rule.SaturationTolerance, 0, 1);
+                rule.ValueTolerance = Math.Clamp(rule.ValueTolerance, 0, 1);
+                rule.EffectStrength = Math.Clamp(rule.EffectStrength, 0, 1);
+                settings.ColorEffects.Rules[i] = rule;
+            }
 
             // Ensure zoom level is valid
             if (settings.ZoomLevel < 0.1)
