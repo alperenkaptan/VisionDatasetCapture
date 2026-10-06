@@ -588,35 +588,65 @@ namespace VisionDatasetCapture
 
         private void UpdatePostProcessingSettings()
         {
+            // Skip if controls are not yet loaded
+            var enabledCheckBox = FindName("PostProcessingEnabledCheckBox") as CheckBox;
+            var grayscaleCheckBox = FindName("GrayscaleCheckBox") as CheckBox;
+            var brightnessSlider = FindName("BrightnessSlider") as Slider;
+            var contrastSlider = FindName("ContrastSlider") as Slider;
+            var saturationSlider = FindName("SaturationSlider") as Slider;
+            var gammaSlider = FindName("GammaSlider") as Slider;
+            var cropEnabledCheckBox = FindName("CropEnabledCheckBox") as CheckBox;
+            var cropXTextBox = FindName("CropXTextBox") as TextBox;
+            var cropYTextBox = FindName("CropYTextBox") as TextBox;
+            var cropWidthTextBox = FindName("CropWidthTextBox") as TextBox;
+            var cropHeightTextBox = FindName("CropHeightTextBox") as TextBox;
+            var resizeEnabledCheckBox = FindName("ResizeEnabledCheckBox") as CheckBox;
+            var resizeWidthTextBox = FindName("ResizeWidthTextBox") as TextBox;
+            var resizeHeightTextBox = FindName("ResizeHeightTextBox") as TextBox;
+            var brightnessLabel = FindName("BrightnessLabel") as TextBlock;
+            var contrastLabel = FindName("ContrastLabel") as TextBlock;
+            var saturationLabel = FindName("SaturationLabel") as TextBlock;
+            var gammaLabel = FindName("GammaLabel") as TextBlock;
+
+            // If any critical control is not found, skip update (still loading)
+            if (enabledCheckBox == null || grayscaleCheckBox == null || brightnessSlider == null ||
+                contrastSlider == null || saturationSlider == null || gammaSlider == null ||
+                cropEnabledCheckBox == null || resizeEnabledCheckBox == null)
+                return;
+
             _currentPostProcessingSettings = new PostProcessingSettings
             {
-                Enabled = ((CheckBox)FindName("PostProcessingEnabledCheckBox")).IsChecked ?? true,
-                Grayscale = ((CheckBox)FindName("GrayscaleCheckBox")).IsChecked ?? false,
-                Brightness = (float)((Slider)FindName("BrightnessSlider")).Value,
-                Contrast = (float)((Slider)FindName("ContrastSlider")).Value,
-                Saturation = (float)((Slider)FindName("SaturationSlider")).Value,
-                Gamma = (float)((Slider)FindName("GammaSlider")).Value,
+                Enabled = enabledCheckBox.IsChecked ?? true,
+                Grayscale = grayscaleCheckBox.IsChecked ?? false,
+                Brightness = (float)brightnessSlider.Value,
+                Contrast = (float)contrastSlider.Value,
+                Saturation = (float)saturationSlider.Value,
+                Gamma = (float)gammaSlider.Value,
                 Crop = new PostProcessingCropSettings
                 {
-                    Enabled = ((CheckBox)FindName("CropEnabledCheckBox")).IsChecked ?? false,
-                    X = int.TryParse(((TextBox)FindName("CropXTextBox")).Text, out var x) ? x : 0,
-                    Y = int.TryParse(((TextBox)FindName("CropYTextBox")).Text, out var y) ? y : 0,
-                    Width = int.TryParse(((TextBox)FindName("CropWidthTextBox")).Text, out var w) ? w : 0,
-                    Height = int.TryParse(((TextBox)FindName("CropHeightTextBox")).Text, out var h) ? h : 0
+                    Enabled = cropEnabledCheckBox.IsChecked ?? false,
+                    X = int.TryParse(cropXTextBox?.Text ?? "", out var x) ? x : 0,
+                    Y = int.TryParse(cropYTextBox?.Text ?? "", out var y) ? y : 0,
+                    Width = int.TryParse(cropWidthTextBox?.Text ?? "", out var w) ? w : 0,
+                    Height = int.TryParse(cropHeightTextBox?.Text ?? "", out var h) ? h : 0
                 },
                 Resize = new PostProcessingResizeSettings
                 {
-                    Enabled = ((CheckBox)FindName("ResizeEnabledCheckBox")).IsChecked ?? false,
-                    Width = int.TryParse(((TextBox)FindName("ResizeWidthTextBox")).Text, out var rw) ? rw : 800,
-                    Height = int.TryParse(((TextBox)FindName("ResizeHeightTextBox")).Text, out var rh) ? rh : 600
+                    Enabled = resizeEnabledCheckBox.IsChecked ?? false,
+                    Width = int.TryParse(resizeWidthTextBox?.Text ?? "", out var rw) ? rw : 800,
+                    Height = int.TryParse(resizeHeightTextBox?.Text ?? "", out var rh) ? rh : 600
                 }
             };
 
-            // Update brightness label
-            ((TextBlock)FindName("BrightnessLabel")).Text = _currentPostProcessingSettings.Brightness.ToString("F1");
-            ((TextBlock)FindName("ContrastLabel")).Text = _currentPostProcessingSettings.Contrast.ToString("F1");
-            ((TextBlock)FindName("SaturationLabel")).Text = _currentPostProcessingSettings.Saturation.ToString("F1");
-            ((TextBlock)FindName("GammaLabel")).Text = _currentPostProcessingSettings.Gamma.ToString("F1");
+            // Update labels safely
+            if (brightnessLabel != null)
+                brightnessLabel.Text = _currentPostProcessingSettings.Brightness.ToString("F1");
+            if (contrastLabel != null)
+                contrastLabel.Text = _currentPostProcessingSettings.Contrast.ToString("F1");
+            if (saturationLabel != null)
+                saturationLabel.Text = _currentPostProcessingSettings.Saturation.ToString("F1");
+            if (gammaLabel != null)
+                gammaLabel.Text = _currentPostProcessingSettings.Gamma.ToString("F1");
 
             UpdatePreview();
             TrySaveCurrentSettings();
@@ -625,6 +655,10 @@ namespace VisionDatasetCapture
         private void UpdatePreview()
         {
             if (_latestRawFrame == null)
+                return;
+
+            var previewControl = FindName("PreviewImage") as WPFImage;
+            if (previewControl == null)
                 return;
 
             Bitmap? displayBitmap = null;
@@ -641,7 +675,7 @@ namespace VisionDatasetCapture
                 if (displayBitmap != null)
                 {
                     var bitmapImage = BitmapToBitmapImage(displayBitmap);
-                    PreviewImageControl.Source = bitmapImage;
+                    previewControl.Source = bitmapImage;
                 }
             }
             finally
