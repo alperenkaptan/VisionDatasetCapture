@@ -38,6 +38,7 @@ namespace VisionDatasetCapture
         private int _captureCount;
 
         private Bitmap? _latestProcessedFrame;
+        private Bitmap? _latestRawCapturedFrame;
         private PostProcessingSettings _currentPostProcessingSettings = new();
         private ColorEffectsSettings _currentColorEffectsSettings = new();
         private bool _isFreezeFrameActive;
@@ -104,6 +105,7 @@ namespace VisionDatasetCapture
 
                     // Cleanup resources
                     _latestProcessedFrame?.Dispose();
+                    _latestRawCapturedFrame?.Dispose();
                     _keyboardHook?.Dispose();
                     _previewCts?.Dispose();
                     _captureCts?.Dispose();
@@ -173,6 +175,18 @@ namespace VisionDatasetCapture
             strengthLabel.Text = colorFx.EffectStrength.ToString("F2", CultureInfo.InvariantCulture);
         }
 
+        private void SyncSelectedColorFromColorEffectsSettings()
+        {
+            var selected = System.Drawing.Color.FromArgb(255,
+                _currentColorEffectsSettings.BaseR,
+                _currentColorEffectsSettings.BaseG,
+                _currentColorEffectsSettings.BaseB);
+
+            _selectedColor = selected;
+            UpdateSelectedColorSwatch(selected);
+            UpdateColorReadout(selected, _lastSamplePoint.HasValue ? (int)_lastSamplePoint.Value.X : 0, _lastSamplePoint.HasValue ? (int)_lastSamplePoint.Value.Y : 0);
+        }
+
         private void ApplySettings(AppCaptureSettings settings)
         {
             var sanitized = SanitizeSettings(settings);
@@ -190,6 +204,7 @@ namespace VisionDatasetCapture
             // Load color effects settings (separate stage)
             _currentColorEffectsSettings = (sanitized.ColorEffects ?? new ColorEffectsSettings()).Clone();
             ConfigureColorEffectsUI();
+            SyncSelectedColorFromColorEffectsSettings();
 
             // Load zoom level
             _zoomLevel = sanitized.ZoomLevel;
@@ -655,6 +670,9 @@ namespace VisionDatasetCapture
                                 {
                                     try
                                     {
+                                        _latestRawCapturedFrame?.Dispose();
+                                        _latestRawCapturedFrame = (Bitmap)bitmap.Clone();
+
                                         var settingsSnapshot = _currentPostProcessingSettings.Clone();
                                         var colorFxSnapshot = _currentColorEffectsSettings.Clone();
                                         using var colorFxFirst = ColorEffectsProcessor.Apply(bitmap, colorFxSnapshot);
@@ -765,6 +783,9 @@ namespace VisionDatasetCapture
                 }
 
                 token.ThrowIfCancellationRequested();
+
+                _latestRawCapturedFrame?.Dispose();
+                _latestRawCapturedFrame = (Bitmap)rawBitmap.Clone();
 
                 // Process the frame using specific-to-general order:
                 // 1) color effects on raw image, 2) global post-processing on the result
@@ -1004,7 +1025,15 @@ namespace VisionDatasetCapture
             if (gammaLabel != null)
                 gammaLabel.Text = _currentPostProcessingSettings.Gamma.ToString("F1");
 
-            UpdatePreviewIfAvailable();
+            if (_isFreezeFrameActive)
+            {
+                ReprocessAndRefreshFrozenFrame();
+            }
+            else
+            {
+                UpdatePreviewIfAvailable();
+            }
+
             TrySaveCurrentSettings();
         }
 
@@ -1077,8 +1106,14 @@ namespace VisionDatasetCapture
             _isFreezeFrameActive = _isCapturing && _currentColorEffectsSettings.FreezeFrame;
             UpdateUIState();
 
-            if (!_isFreezeFrameActive)
+            if (_isFreezeFrameActive)
+            {
+                ReprocessAndRefreshFrozenFrame();
+            }
+            else
+            {
                 UpdatePreviewIfAvailable();
+            }
 
             TrySaveCurrentSettings();
         }
@@ -1129,6 +1164,36 @@ namespace VisionDatasetCapture
                 // If frames are disposed during access, silently skip update
                 processedCopy?.Dispose();
             }
+        }
+
+        private void ReprocessAndRefreshFrozenFrame()
+        {
+            if (_latestRawCapturedFrame == null)
+                return;
+
+            Bitmap? previewCopy = null;
+            try
+            {
+                using var rawClone = (Bitmap)_latestRawCapturedFrame.Clone();
+                var colorFxSnapshot = _currentColorEffectsSettings.Clone();
+                var postSnapshot = _currentPostProcessingSettings.Clone();
+
+                using var colorApplied = ColorEffectsProcessor.Apply(rawClone, colorFxSnapshot);
+                using var processed = ImageProcessor.Process(colorApplied, postSnapshot);
+
+                _latestProcessedFrame?.Dispose();
+                _latestProcessedFrame = (Bitmap)processed.Clone();
+
+                previewCopy = (Bitmap)_latestProcessedFrame.Clone();
+            }
+            catch
+            {
+                previewCopy?.Dispose();
+                return;
+            }
+
+            if (previewCopy != null)
+                UpdatePreview(previewCopy);
         }
 
         private void UpdatePreview(Bitmap processedFrame)
@@ -1325,7 +1390,7 @@ namespace VisionDatasetCapture
                 hsvLabel.Text = $"{hsv.H:F1}°, {hsv.S:F1}%, {hsv.V:F1}%";
 
             if (coordLabel != null)
-                coordLabel.Text = $"({x}, {y})";
+                coordLabel.Text = _lastSamplePoint.HasValue || (x != 0 || y != 0) ? $"({x}, {y})" : "-";
         }
 
         private void UpdateSelectedColorSwatch(System.Drawing.Color color)
@@ -1661,6 +1726,7 @@ namespace VisionDatasetCapture
         {
             TrySaveCurrentSettings();
             DisposeKeyboardHook();
+            _latestRawCapturedFrame?.Dispose();
             _previewCts?.Cancel();
             _captureCts?.Cancel();
             base.OnClosed(e);
