@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Drawing;
+using System.Drawing.Imaging;
 using DrawingBitmap = System.Drawing.Bitmap;
 using System.Windows;
 using System.Windows.Controls;
@@ -20,11 +21,13 @@ namespace VisionDatasetCapture
             new CaptureModeOption(CaptureMode.ManualKeystroke, "Manual keystroke capture")
         };
 
-        private CancellationTokenSource? _cts;
+        private CancellationTokenSource? _previewCts;  // Controls preview streaming
+        private CancellationTokenSource? _captureCts;  // Controls dataset screenshot capture
         private Task? _loopTask;
         private Task? _previewLoopTask;
         private GlobalKeyboardHook? _keyboardHook;
-        private bool _isCapturing;
+        private bool _isCapturing; // Preview streaming is active
+        private bool _isCapturingDataset; // Actually taking screenshots
         private CaptureMode _activeCaptureMode = CaptureMode.AutoTimed;
         private IntPtr _activeHandle;
         private string _activeDataset = "";
@@ -48,6 +51,35 @@ namespace VisionDatasetCapture
             ConfigurePostProcessingUI();
             ApplySettings(AppCaptureSettingsStore.LoadOrDefault());
             UpdateUIState();
+        }
+
+        private async void Window_Closing(object sender, System.ComponentModel.CancelEventArgs e)
+        {
+            // Gracefully shutdown any active capture/preview
+            if (_isCapturingDataset || _isCapturing)
+            {
+                e.Cancel = true;
+
+                try
+                {
+                    if (_isCapturingDataset)
+                        await StopCaptureAsync();
+
+                    if (_isCapturing)
+                        await StopPreviewAsync();
+                }
+                finally
+                {
+                    // Cleanup resources
+                    _latestRawFrame?.Dispose();
+                    _latestProcessedFrame?.Dispose();
+                    _keyboardHook?.Dispose();
+                    _previewCts?.Dispose();
+                    _captureCts?.Dispose();
+
+                    Close();
+                }
+            }
         }
 
         private void ConfigureCaptureModes()
@@ -135,7 +167,7 @@ namespace VisionDatasetCapture
         private async void StartPreviewButton_Click(object sender, RoutedEventArgs e)
         {
             if (_isCapturing)
-                await StopCaptureAsync();
+                await StopPreviewAsync();
             else
                 StartPreview();
         }
@@ -155,11 +187,18 @@ namespace VisionDatasetCapture
 
             _isCapturing = true;
             _activeHandle = handle;
-            var cts = new CancellationTokenSource();
-            _cts = cts;
-            _previewLoopTask = Task.Run(() => PreviewLoopAsync(cts));
+
+            // Create or reuse preview CTS
+            if (_previewCts == null)
+            {
+                _previewCts = new CancellationTokenSource();
+            }
+
+            _previewLoopTask = Task.Run(() => PreviewLoopAsync(_previewCts));
             UpdateUIState();
-        }        private void CaptureModeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        }
+
+        private void CaptureModeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             UpdateCaptureModeInputs();
             UpdateUIState();
@@ -219,7 +258,7 @@ namespace VisionDatasetCapture
 
         private async void ToggleButton_Click(object sender, RoutedEventArgs e)
         {
-            if (_isCapturing)
+            if (_isCapturingDataset)
                 await StopCaptureAsync();
             else
                 StartCapture();
@@ -248,14 +287,14 @@ namespace VisionDatasetCapture
                 return;
             }
 
-            var cts = new CancellationTokenSource();
+            var captureCts = new CancellationTokenSource();
             GlobalKeyboardHook? keyboardHook = null;
 
             try
             {
                 if (options.Mode == CaptureMode.ManualKeystroke)
                 {
-                    keyboardHook = new GlobalKeyboardHook(options.ManualKey, () => _ = CaptureSingleFrameAsync(cts));
+                    keyboardHook = new GlobalKeyboardHook(options.ManualKey, () => _ = CaptureSingleFrameAsync(captureCts));
                     keyboardHook.Start();
                 }
             }
@@ -266,14 +305,14 @@ namespace VisionDatasetCapture
                 return;
             }
 
-            _cts = cts;
+            _captureCts = captureCts;
             _keyboardHook = keyboardHook;
             _activeCaptureMode = options.Mode;
             _activeHandle = options.Handle;
             _activeDataset = options.DatasetName;
             _nextImageNumber = nextNumber;
             _captureCount = 0;
-            _isCapturing = true;
+            _isCapturingDataset = true;
 
             ProcessLabel.Text = options.SelectedProcess.DisplayName;
             DatasetLabel.Text = options.DatasetName;
@@ -284,42 +323,49 @@ namespace VisionDatasetCapture
             TrySaveCurrentSettings();
 
             _loopTask = options.Mode == CaptureMode.AutoTimed
-                ? Task.Run(() => CaptureLoopAsync(options.IntervalSeconds, cts))
-                : Task.Run(() => WaitForCancellationAsync(cts.Token));
-
-            // Start preview loop (continuous preview capture at ~30fps)
-            _previewLoopTask = Task.Run(() => PreviewLoopAsync(cts));
+                ? Task.Run(() => CaptureLoopAsync(options.IntervalSeconds, captureCts))
+                : Task.Run(() => WaitForCancellationAsync(captureCts.Token));
         }
 
         private async Task StopCaptureAsync()
         {
-            _isCapturing = false;
-            var cts = _cts;
-            _cts = null;
+            _isCapturingDataset = false;
+            var captureCts = _captureCts;
+            _captureCts = null;
             DisposeKeyboardHook();
-            cts?.Cancel();
+            captureCts?.Cancel();
 
             ToggleButton.IsEnabled = false;
             var loop = _loopTask;
-            var previewLoop = _previewLoopTask;
             if (loop != null)
                 await loop;
-            if (previewLoop != null)
-                await previewLoop;
             ToggleButton.IsEnabled = true;
             UpdateUIState();
         }
 
-        private async Task CaptureLoopAsync(int intervalSeconds, CancellationTokenSource cts)
+        private async Task StopPreviewAsync()
         {
-            var token = cts.Token;
+            _isCapturing = false;
+            var previewCts = _previewCts;
+            _previewCts = null;
+            previewCts?.Cancel();
+
+            var previewLoop = _previewLoopTask;
+            if (previewLoop != null)
+                await previewLoop;
+            UpdateUIState();
+        }
+
+        private async Task CaptureLoopAsync(int intervalSeconds, CancellationTokenSource captureCts)
+        {
+            var token = captureCts.Token;
 
             try
             {
                 using var timer = new PeriodicTimer(TimeSpan.FromSeconds(intervalSeconds));
                 do
                 {
-                    if (!await CaptureFrameAsync(cts, skipIfBusy: false))
+                    if (!await CaptureFrameAsync(captureCts, skipIfBusy: false))
                         break;
                 }
                 while (await timer.WaitForNextTickAsync(token));
@@ -329,62 +375,114 @@ namespace VisionDatasetCapture
             }
         }
 
-        private async Task CaptureSingleFrameAsync(CancellationTokenSource cts)
+        private async Task CaptureSingleFrameAsync(CancellationTokenSource captureCts)
         {
             try
             {
-                await CaptureFrameAsync(cts, skipIfBusy: true);
+                await CaptureFrameAsync(captureCts, skipIfBusy: true);
             }
             catch (OperationCanceledException)
             {
             }
         }
 
-        private async Task PreviewLoopAsync(CancellationTokenSource cts)
+        private async Task PreviewLoopAsync(CancellationTokenSource previewCts)
         {
-            var token = cts.Token;
+            var token = previewCts.Token;
 
             try
             {
                 using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(33)); // ~30fps
                 do
                 {
-                    bool lockTaken = false;
                     try
                     {
-                        lockTaken = await _captureLock.WaitAsync(0, token);
-                        if (!lockTaken)
-                            continue;
-
+                        // Non-blocking capture - just get the latest frame without waiting for lock
                         using var bitmap = ScreenshotCapture.CaptureWindow(_activeHandle);
                         if (bitmap != null)
                         {
-                            _latestRawFrame?.Dispose();
-                            _latestRawFrame = (DrawingBitmap)bitmap.Clone();
-
-                            var settingsSnapshot = _currentPostProcessingSettings.Clone();
-                            using var processed = ImageProcessor.Process(bitmap, settingsSnapshot);
-
-                            _latestProcessedFrame?.Dispose();
-                            _latestProcessedFrame = (DrawingBitmap)processed.Clone();
-
-                            // Make safe copies while holding the lock
-                            var rawCopy = (Bitmap)_latestRawFrame.Clone();
-                            var processedCopy = (Bitmap)_latestProcessedFrame.Clone();
-
-                            _ = Dispatcher.BeginInvoke(() =>
+                            try
                             {
-                                if (ReferenceEquals(_cts, cts))
+                                // Try to acquire lock with timeout to avoid blocking the preview loop
+                                bool lockAcquired = await _captureLock.WaitAsync(100, token);
+                                if (lockAcquired)
                                 {
-                                    UpdatePreview(rawCopy, processedCopy);
+                                    try
+                                    {
+                                        _latestRawFrame?.Dispose();
+                                        _latestRawFrame = (DrawingBitmap)bitmap.Clone();
+
+                                        var settingsSnapshot = _currentPostProcessingSettings.Clone();
+                                        using var processed = ImageProcessor.Process(bitmap, settingsSnapshot);
+
+                                        _latestProcessedFrame?.Dispose();
+                                        _latestProcessedFrame = (DrawingBitmap)processed.Clone();
+                                    }
+                                    finally
+                                    {
+                                        _captureLock.Release();
+                                    }
                                 }
-                            });
+                                // else: lock is busy, skip this frame update but continue
+
+                                // Dispatch to UI with owned copies (don't hold lock during dispatch)
+                                if (_latestRawFrame != null && _latestProcessedFrame != null)
+                                {
+                                    var rawCopy = (Bitmap)_latestRawFrame.Clone();
+                                    var processedCopy = (Bitmap)_latestProcessedFrame.Clone();
+
+                                    _ = Dispatcher.BeginInvoke(() =>
+                                    {
+                                        try
+                                        {
+                                            if (ReferenceEquals(_previewCts, previewCts))
+                                            {
+                                                UpdatePreview(rawCopy, processedCopy);
+                                            }
+                                            else
+                                            {
+                                                rawCopy?.Dispose();
+                                                processedCopy?.Dispose();
+                                            }
+                                        }
+                                        catch (Exception ex)
+                                        {
+                                            System.Diagnostics.Debug.WriteLine($"Error updating preview: {ex}");
+                                            rawCopy?.Dispose();
+                                            processedCopy?.Dispose();
+                                        }
+                                    });
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                System.Diagnostics.Debug.WriteLine($"Error processing frame: {ex}");
+                            }
+                        }
+                        else
+                        {
+                            // Window closed or became invalid
+                            if (_isCapturingDataset || _isCapturing)
+                            {
+                                _ = Dispatcher.BeginInvoke(async () =>
+                                {
+                                    try
+                                    {
+                                        ErrorMessageBlock.Text = "Target window closed or is no longer accessible.";
+                                        if (_isCapturingDataset)
+                                            await StopCaptureAsync();
+                                        if (_isCapturing)
+                                            await StopPreviewAsync();
+                                    }
+                                    catch { }
+                                });
+                            }
+                            break;
                         }
                     }
-                    finally
+                    catch (Exception ex)
                     {
-                        if (lockTaken)
-                            _captureLock.Release();
+                        System.Diagnostics.Debug.WriteLine($"Error in preview loop iteration: {ex}");
                     }
                 }
                 while (await timer.WaitForNextTickAsync(token));
@@ -392,11 +490,15 @@ namespace VisionDatasetCapture
             catch (OperationCanceledException)
             {
             }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Fatal error in PreviewLoopAsync: {ex}");
+            }
         }
 
-        private async Task<bool> CaptureFrameAsync(CancellationTokenSource cts, bool skipIfBusy)
+        private async Task<bool> CaptureFrameAsync(CancellationTokenSource captureCts, bool skipIfBusy)
         {
-            var token = cts.Token;
+            var token = captureCts.Token;
             var lockTaken = false;
 
             try
@@ -416,7 +518,7 @@ namespace VisionDatasetCapture
                 using var rawBitmap = ScreenshotCapture.CaptureWindow(_activeHandle);
                 if (rawBitmap == null)
                 {
-                    await HandleCaptureFailureAsync(cts, "Failed to capture screenshot (window closed, minimized or invalid).");
+                    await HandleCaptureFailureAsync(captureCts, "Failed to capture screenshot (window closed, minimized or invalid).");
                     return false;
                 }
 
@@ -448,7 +550,7 @@ namespace VisionDatasetCapture
                 // Update UI
                 _ = Dispatcher.BeginInvoke(() =>
                 {
-                    if (ReferenceEquals(_cts, cts))
+                    if (ReferenceEquals(_captureCts, captureCts))
                     {
                         CapturedLabel.Text = saved.ToString(CultureInfo.InvariantCulture);
                         LastFileLabel.Text = filename;
@@ -464,7 +566,7 @@ namespace VisionDatasetCapture
             }
             catch (Exception ex)
             {
-                await HandleCaptureFailureAsync(cts, $"Capture error: {ex.Message}");
+                await HandleCaptureFailureAsync(captureCts, $"Capture error: {ex.Message}");
                 return false;
             }
             finally
@@ -474,11 +576,11 @@ namespace VisionDatasetCapture
             }
         }
 
-        private async Task HandleCaptureFailureAsync(CancellationTokenSource cts, string message)
+        private async Task HandleCaptureFailureAsync(CancellationTokenSource captureCts, string message)
         {
             await Dispatcher.InvokeAsync(() =>
             {
-                if (ReferenceEquals(_cts, cts))
+                if (ReferenceEquals(_captureCts, captureCts))
                 {
                     ErrorMessageBlock.Text = message;
                     _ = StopCaptureAsync();
@@ -698,25 +800,37 @@ namespace VisionDatasetCapture
 
         private void UpdatePreview(Bitmap rawFrame, Bitmap processedFrame)
         {
-            var processedControl = FindName("ProcessedPreviewImage") as WPFImage;
-            var originalControl = FindName("OriginalPreviewImage") as WPFImage;
-            if (processedControl == null || originalControl == null)
-            {
-                rawFrame?.Dispose();
-                processedFrame?.Dispose();
+            if (rawFrame == null || processedFrame == null)
                 return;
-            }
 
             try
             {
-                var processedImage = BitmapToBitmapImage(processedFrame);
-                var originalImage = BitmapToBitmapImage(rawFrame);
+                var processedControl = FindName("ProcessedPreviewImage") as WPFImage;
+                var originalControl = FindName("OriginalPreviewImage") as WPFImage;
+                if (processedControl == null || originalControl == null)
+                {
+                    rawFrame?.Dispose();
+                    processedFrame?.Dispose();
+                    return;
+                }
 
-                processedControl.Source = processedImage;
-                originalControl.Source = originalImage;
+                try
+                {
+                    var processedImage = BitmapToBitmapImage(processedFrame);
+                    var originalImage = BitmapToBitmapImage(rawFrame);
+
+                    processedControl.Source = processedImage;
+                    originalControl.Source = originalImage;
+                }
+                finally
+                {
+                    rawFrame?.Dispose();
+                    processedFrame?.Dispose();
+                }
             }
-            finally
+            catch (Exception ex)
             {
+                System.Diagnostics.Debug.WriteLine($"Error in UpdatePreview: {ex}");
                 rawFrame?.Dispose();
                 processedFrame?.Dispose();
             }
@@ -724,6 +838,7 @@ namespace VisionDatasetCapture
 
         private BitmapImage BitmapToBitmapImage(DrawingBitmap bitmap)
         {
+            // Use BMP format - uncompressed, fastest for UI updates
             using var memory = new System.IO.MemoryStream();
             bitmap.Save(memory, System.Drawing.Imaging.ImageFormat.Bmp);
             memory.Position = 0;
@@ -743,33 +858,36 @@ namespace VisionDatasetCapture
             var selectedMode = GetSelectedCaptureMode();
             var hasValidProcess = ProcessComboBox.SelectedItem is ProcessInfo;
 
-            // Start Preview button state
+            // Start Capture button state (preview streaming gate)
+            // Should be disabled while capturing dataset to prevent accidentally stopping the stream
             var startPreviewButton = FindName("StartPreviewButton") as Button;
             if (startPreviewButton != null)
             {
                 startPreviewButton.Content = _isCapturing ? "Stop Capture" : "Start Capture";
                 startPreviewButton.Background = _isCapturing ? WPFBrushes.OrangeRed : WPFBrushes.CornflowerBlue;
-                startPreviewButton.IsEnabled = hasValidProcess;
+                startPreviewButton.IsEnabled = hasValidProcess && !_isCapturingDataset;
             }
 
-            // Toggle button for dataset capture (only enabled when previewing)
-            ToggleButton.Content = "Start Capture";
-            ToggleButton.Background = WPFBrushes.CornflowerBlue;
+            // Toggle button for dataset screenshot capture
+            // Enabled when previewing (to start captures) or when already capturing (to stop captures)
+            var modeText = selectedMode == CaptureMode.AutoTimed ? "Auto Screenshots" : "Manual Screenshots";
+            ToggleButton.Content = _isCapturingDataset ? $"Stop {modeText}" : $"Start {modeText}";
+            ToggleButton.Background = _isCapturingDataset ? WPFBrushes.OrangeRed : WPFBrushes.CornflowerBlue;
             ToggleButton.IsEnabled = _isCapturing;
 
             // Process selector: only enabled when not previewing
             ProcessComboBox.IsEnabled = !_isCapturing;
 
-            // Settings: only enabled when previewing
-            DatasetNameTextBox.IsEnabled = _isCapturing;
-            CaptureModeSelector.IsEnabled = _isCapturing;
-            IntervalTextBox.IsEnabled = _isCapturing && selectedMode == CaptureMode.AutoTimed;
-            ManualKeyInput.IsEnabled = _isCapturing && selectedMode == CaptureMode.ManualKeystroke;
+            // Settings: only enabled when previewing but not capturing dataset
+            DatasetNameTextBox.IsEnabled = _isCapturing && !_isCapturingDataset;
+            CaptureModeSelector.IsEnabled = _isCapturing && !_isCapturingDataset;
+            IntervalTextBox.IsEnabled = _isCapturing && !_isCapturingDataset && selectedMode == CaptureMode.AutoTimed;
+            ManualKeyInput.IsEnabled = _isCapturing && !_isCapturingDataset && selectedMode == CaptureMode.ManualKeystroke;
 
-            // Post-processing controls: only enabled when previewing
-            SetPostProcessingControlsEnabled(_isCapturing);
+            // Post-processing controls: only enabled when previewing but not capturing dataset
+            SetPostProcessingControlsEnabled(_isCapturing && !_isCapturingDataset);
 
-            StateLabel.Text = _isCapturing ? "Previewing" : "Stopped";
+            StateLabel.Text = _isCapturingDataset ? "Capturing Dataset" : (_isCapturing ? "Previewing" : "Stopped");
             CaptureModeStatusLabel.Text = GetCaptureModeDisplayName(selectedMode);
 
             if (!_isCapturing)
@@ -812,7 +930,8 @@ namespace VisionDatasetCapture
         {
             TrySaveCurrentSettings();
             DisposeKeyboardHook();
-            _cts?.Cancel();
+            _previewCts?.Cancel();
+            _captureCts?.Cancel();
             base.OnClosed(e);
         }
 
