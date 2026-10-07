@@ -49,6 +49,20 @@
         <!-- Right side: Settings -->
         <ScrollViewer Grid.Column="1" Margin="8" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
             <StackPanel>
+                <!-- Photoshop tools -->
+                <TextBlock Text="PHOTOSHOP" FontWeight="Bold" Margin="0,0,0,8"/>
+
+                <TextBlock Text="Crop option"/>
+                <ComboBox x:Name="PhotoshopOperationComboBox" Margin="0,2,0,10"/>
+
+                <Button x:Name="SelectPhotoshopPngFilesButton" Content="Select PNG Files" Height="30" Click="SelectPhotoshopPngFilesButton_Click" Margin="0,0,0,6"/>
+                <TextBlock x:Name="PhotoshopSelectionSummaryTextBlock" Text="No PNG files selected" Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,8"/>
+
+                <Button x:Name="RunPhotoshopOperationButton" Content="Run" Height="30" Click="RunPhotoshopOperationButton_Click" Margin="0,0,0,6"/>
+                <TextBlock x:Name="PhotoshopStatusTextBlock" Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,10" MinHeight="18"/>
+
+                <Separator Margin="0,8"/>
+
                 <!-- Capture Controls -->
                 <TextBlock Text="CAPTURE SETTINGS" FontWeight="Bold" Margin="0,0,0,8"/>
 

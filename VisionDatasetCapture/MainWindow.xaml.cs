@@ -25,6 +25,13 @@ namespace VisionDatasetCapture
             new CaptureModeOption(CaptureMode.AutoTimed, "Auto timed screenshot"),
             new CaptureModeOption(CaptureMode.ManualKeystroke, "Manual keystroke capture")
         };
+        private readonly List<PhotoshopOperationOption> _photoshopOperations = new()
+        {
+            new PhotoshopOperationOption(PhotoshopOperation.CenterCrop512, "Center 512x512 crop")
+        };
+
+        private string[] _selectedPhotoshopPngFiles = Array.Empty<string>();
+        private bool _isPhotoshopOperationRunning;
 
         private CancellationTokenSource? _previewCts;  // Controls preview streaming
         private CancellationTokenSource? _captureCts;  // Controls dataset screenshot capture
@@ -89,6 +96,7 @@ namespace VisionDatasetCapture
 
             InitializeComponent();
 
+            ConfigurePhotoshopTools();
             ConfigureCaptureModes();
             ConfigurePostProcessingUI();
             ApplySettings(AppCaptureSettingsStore.LoadOrDefault());
@@ -140,6 +148,20 @@ namespace VisionDatasetCapture
             CaptureModeSelector.DisplayMemberPath = nameof(CaptureModeOption.DisplayName);
             CaptureModeSelector.SelectedValuePath = nameof(CaptureModeOption.Mode);
             CaptureModeSelector.SelectedValue = CaptureMode.AutoTimed;
+        }
+
+        private void ConfigurePhotoshopTools()
+        {
+            var operationComboBox = FindName("PhotoshopOperationComboBox") as ComboBox;
+            if (operationComboBox != null)
+            {
+                operationComboBox.ItemsSource = _photoshopOperations;
+                operationComboBox.DisplayMemberPath = nameof(PhotoshopOperationOption.DisplayName);
+                operationComboBox.SelectedValuePath = nameof(PhotoshopOperationOption.Operation);
+                operationComboBox.SelectedValue = PhotoshopOperation.CenterCrop512;
+            }
+
+            SetPhotoshopStatus("", isSuccess: true);
         }
 
         private void ConfigurePostProcessingUI()
@@ -2440,6 +2462,175 @@ namespace VisionDatasetCapture
             }
         }
 
+        private void SelectPhotoshopPngFilesButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var dialog = new OpenFileDialog
+                {
+                    Filter = "PNG files (*.png)|*.png",
+                    Multiselect = true,
+                    CheckFileExists = true,
+                    Title = "Select PNG files"
+                };
+
+                if (dialog.ShowDialog() != true)
+                    return;
+
+                _selectedPhotoshopPngFiles = dialog.FileNames
+                    .Where(path => string.Equals(Path.GetExtension(path), ".png", StringComparison.OrdinalIgnoreCase))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+
+                var selectionLabel = FindName("PhotoshopSelectionSummaryTextBlock") as TextBlock;
+                if (selectionLabel != null)
+                {
+                    selectionLabel.Text = _selectedPhotoshopPngFiles.Length == 0
+                        ? "No PNG files selected"
+                        : $"Selected {_selectedPhotoshopPngFiles.Length} PNG file(s)";
+                    selectionLabel.Foreground = _selectedPhotoshopPngFiles.Length == 0
+                        ? WPFBrushes.Gray
+                        : WPFBrushes.DarkGreen;
+                }
+
+                SetPhotoshopStatus(_selectedPhotoshopPngFiles.Length == 0
+                    ? "No valid PNG files were selected."
+                    : "Ready to crop from image center.", _selectedPhotoshopPngFiles.Length > 0);
+            }
+            catch (Exception ex)
+            {
+                SetPhotoshopStatus($"PNG selection failed: {ex.Message}", isSuccess: false);
+            }
+        }
+
+        private async void RunPhotoshopOperationButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (_isPhotoshopOperationRunning)
+                return;
+
+            if (_selectedPhotoshopPngFiles.Length == 0)
+            {
+                SetPhotoshopStatus("Select PNG files first.", isSuccess: false);
+                return;
+            }
+
+            var selectedOperation = (FindName("PhotoshopOperationComboBox") as ComboBox)?.SelectedItem as PhotoshopOperationOption;
+            if (selectedOperation == null)
+            {
+                SetPhotoshopStatus("Select a crop option first.", isSuccess: false);
+                return;
+            }
+
+            _isPhotoshopOperationRunning = true;
+            SetPhotoshopToolsEnabled(false);
+            SetPhotoshopStatus("Cropping PNG files...", isSuccess: true);
+
+            try
+            {
+                var result = await Task.Run(() => selectedOperation.Operation switch
+                {
+                    PhotoshopOperation.CenterCrop512 => CropImagesFromMiddle(_selectedPhotoshopPngFiles, 512),
+                    _ => throw new InvalidOperationException("Unsupported Photoshop operation.")
+                });
+
+                var summary = $"Cropped {result.CroppedCount} file(s) into '{result.OutputFolderName}'.";
+                if (result.SkippedCount > 0 || result.ErrorCount > 0)
+                    summary += $" Skipped: {result.SkippedCount}, Errors: {result.ErrorCount}.";
+
+                SetPhotoshopStatus(summary, result.ErrorCount == 0);
+            }
+            catch (Exception ex)
+            {
+                SetPhotoshopStatus($"Cropping failed: {ex.Message}", isSuccess: false);
+            }
+            finally
+            {
+                _isPhotoshopOperationRunning = false;
+                SetPhotoshopToolsEnabled(true);
+            }
+        }
+
+        private static PhotoshopOperationResult CropImagesFromMiddle(IEnumerable<string> filePaths, int cropSize)
+        {
+            var croppedCount = 0;
+            var skippedCount = 0;
+            var errorCount = 0;
+            const string outputFolderName = "512x512 cropped";
+            var halfSize = cropSize / 2;
+
+            foreach (var filePath in filePaths)
+            {
+                try
+                {
+                    using var sourceBitmap = new DrawingBitmap(filePath);
+                    if (sourceBitmap.Width < cropSize || sourceBitmap.Height < cropSize)
+                    {
+                        skippedCount++;
+                        continue;
+                    }
+
+                    var centerX = sourceBitmap.Width / 2;
+                    var centerY = sourceBitmap.Height / 2;
+                    var cropX = Math.Clamp(centerX - halfSize, 0, sourceBitmap.Width - cropSize);
+                    var cropY = Math.Clamp(centerY - halfSize, 0, sourceBitmap.Height - cropSize);
+                    var cropRect = new Rectangle(cropX, cropY, cropSize, cropSize);
+
+                    using var croppedBitmap = new DrawingBitmap(cropSize, cropSize);
+                    using (var graphics = Graphics.FromImage(croppedBitmap))
+                    {
+                        graphics.DrawImage(sourceBitmap, new Rectangle(0, 0, cropSize, cropSize), cropRect, GraphicsUnit.Pixel);
+                    }
+
+                    var sourceDirectory = Path.GetDirectoryName(filePath);
+                    if (string.IsNullOrWhiteSpace(sourceDirectory))
+                    {
+                        errorCount++;
+                        continue;
+                    }
+
+                    var outputDirectory = Path.Combine(sourceDirectory, outputFolderName);
+                    Directory.CreateDirectory(outputDirectory);
+
+                    var outputPath = Path.Combine(outputDirectory, Path.GetFileName(filePath));
+                    croppedBitmap.Save(outputPath, ImageFormat.Png);
+                    croppedCount++;
+                }
+                catch
+                {
+                    errorCount++;
+                }
+            }
+
+            return new PhotoshopOperationResult(croppedCount, skippedCount, errorCount, outputFolderName);
+        }
+
+        private void SetPhotoshopToolsEnabled(bool enabled)
+        {
+            var selectButton = FindName("SelectPhotoshopPngFilesButton") as Button;
+            if (selectButton != null)
+                selectButton.IsEnabled = enabled;
+
+            var runButton = FindName("RunPhotoshopOperationButton") as Button;
+            if (runButton != null)
+                runButton.IsEnabled = enabled;
+
+            var operationComboBox = FindName("PhotoshopOperationComboBox") as ComboBox;
+            if (operationComboBox != null)
+                operationComboBox.IsEnabled = enabled;
+        }
+
+        private void SetPhotoshopStatus(string message, bool isSuccess)
+        {
+            var statusBlock = FindName("PhotoshopStatusTextBlock") as TextBlock;
+            if (statusBlock == null)
+                return;
+
+            statusBlock.Text = message;
+            statusBlock.Foreground = string.IsNullOrWhiteSpace(message)
+                ? WPFBrushes.Gray
+                : (isSuccess ? WPFBrushes.DarkGreen : WPFBrushes.Firebrick);
+        }
+
         private void ShowSettingsMessage(string message, bool isSuccess)
         {
             var msgBlock = FindName("SettingsMessageBlock") as TextBlock;
@@ -2449,6 +2640,14 @@ namespace VisionDatasetCapture
                 msgBlock.Foreground = isSuccess ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Colors.DarkGreen) : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Colors.Firebrick);
             }
         }
+
+        private enum PhotoshopOperation
+        {
+            CenterCrop512
+        }
+
+        private sealed record PhotoshopOperationOption(PhotoshopOperation Operation, string DisplayName);
+        private sealed record PhotoshopOperationResult(int CroppedCount, int SkippedCount, int ErrorCount, string OutputFolderName);
 
         private sealed record CaptureModeOption(CaptureMode Mode, string DisplayName);
 
